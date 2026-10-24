@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.DS_Store
+push-to-github.ps1
+push-to-github.cmd

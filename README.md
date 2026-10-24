@@ -1,4 +1,121 @@
-# 无限token模式（unlimited token mode）
+# Unlimited Token Mode
+
+**English** | [中文](#中文)
+
+> Also known as **"白饭管够模式"** (All-You-Can-Eat Rice Mode) — because the whole point is to stop the model from going into power-saving mode.
+
+An external governance layer for models whose *judgment* can be trusted but whose *bookkeeping* cannot.
+
+This is not a prompt-trick collection. It is a set of **hard rules + scripts + a validator** that move the model's ledger, its self-checks, and its definition of "done" out of its thinking and into something verifiable.
+
+---
+
+## What it fixes
+
+Five failure classes **reproduced** in long-horizon tasks on models like `deepseek-v4.1-flash-1017`. Every row is backed by measured numbers, not guesswork.
+
+| # | Failure | Symptom | Countermeasure |
+|---|---------|---------|----------------|
+| 1 | **Budget counting inside thinking** | Ask it to "run the script 10 times then produce a statistics report" and it tallies rounds and running totals in its reasoning, drifts mid-way, and the final numbers don't match | Loops go to scripts, ledgers go to files |
+| 2 | **"Check the state once first"** | Prompt says "look at current state, then monitor" → it either forgets to check, or treats the first snapshot as authoritative and never refreshes | State is injected by the runtime; never write "check once first" |
+| 3 | **Ambiguity never clarified** | Any ambiguous quantifier in the prompt (at most / at least / default / normal) → it picks one reading, starts working, and never circles back | Turn ambiguity into a contract before starting |
+| 4 | **Manufactured budget scarcity (stinginess)** | "Save as many tokens as you can", "you have limited steps" makes it economize by **cutting self-checks**, not by cutting waste. Eats rice, does no work | Forbid manufactured scarcity; verification is always free |
+| 5 | **Narration instead of verification** | It says "let me check", then answers itself in its reasoning — no tool call actually happened | "Done" must be falsifiable |
+
+Item 4 is the one the original author considers **most severe**. Repository-side measurements sharpen it:
+
+- **"It hoards a budget that refreshes" — disproved.** Budget utilization was 0.98–1.00; no idle cycles.
+- **"It verifies less once verification costs money" — confirmed.** Charging $1 per query dropped the number of rounds that actually asked from 8/8 to 5/8.
+
+So what is forbidden is **manufacturing a sense of scarcity**, not setting limits.
+
+---
+
+## The seven contracts
+
+Each one = a hard rule + a trigger condition + an artifact. Violating one is a task failure, not a style issue.
+
+1. **Ambiguity contract** — Before acting, list every word that can be read more than one way. Either ask (all at once, ≤3 questions, each with a recommended answer and reasoning), or pin it down explicitly in the kickoff brief. No silent defaults.
+2. **Externalize state** — Anything that accumulates, decrements, or must survive across steps (loop counters, budgets, balances, progress, retry counts) never lives in thinking. Loops run as scripts; ledgers are written to `state/*.json`.
+3. **Consequence gate** — Before any irreversible action, write out second- and third-order consequences and **name the entities**. Naming must change the action; naming a risk without changing the action counts as not having done it.
+4. **Verification is free** — dry-run / check / preview / query never counts as waste. Before saying "can't do it / not feasible / no options left", you must actually check once.
+5. **Signal phase** — Classify every signal as **ex ante** or **ex post**. An ex-post notification (alert, interrupt, fallback, "it'll get blocked") is not a reason to wait; it only lets you cut losses — by the time it arrives, the thing already happened.
+6. **No manufactured scarcity** — Don't create artificial scarcity for yourself. Save by eliminating duplicate actions, never by eliminating verification.
+7. **Falsifiable finish** — Saying "done" requires **a check that could have failed but didn't**, plus its real output.
+
+Three gears keyed to **irreversibility × scale**: light (read-only, instant rollback, ≤3 steps) / standard (writes, counting) / strict (irreversible, externally visible, AIOps). When unsure, shift up a gear.
+
+---
+
+## Repository layout
+
+```
+unlimited-token-mode/
+├── SKILL.md                          # Main skill file (seven contracts, three gears, five startup steps, banned-phrase list)
+├── references/
+│   ├── evidence-map.md               # Measured numbers and sources per contract, plus disproved practices (don't copy them)
+│   ├── consequence-gate.md           # Full consequence-gate derivation template + two worked examples
+│   ├── harness-patterns.md           # Code patterns: externalized loops, state files, environment injection
+│   └── prompt-compiler.md            # Compile any request into an "unlimited token mode" prompt
+├── templates/
+│   ├── task-brief.md                 # Task contract (ambiguity resolution table)
+│   ├── decision-log.md               # Decision block (second/third-order consequences)
+│   └── run-report.md                 # Falsifiable finish report
+└── scripts/
+    ├── unlimited_lint.py             # Artifact validator
+    └── selftest.py                   # Validator self-test (19 cases)
+```
+
+Also included:
+
+- `preset/cordis-preset.yml` — the DeepSeek Harness agent preset block (insert directly into `cordis.patch.yml`).
+- `preset/prompt-prefix.md` — the full resident governance prefix, usable as a system prompt in any other framework.
+
+---
+
+## Usage
+
+### Option 1: DeepSeek Harness preset (recommended)
+
+1. Copy the whole `unlimited-token-mode/` directory to `~/.dsh/preset-skills/unlimited-token-mode`.
+2. Insert the contents of `preset/cordis-preset.yml` into `~/.dsh/profiles/<your-profile>/cordis.patch.yml`.
+3. Restart DSH and pick "无限token模式" from the mode dropdown in the session header.
+
+The preset carries a resident prefix (seven hard rules + five startup steps + banned-phrase list) that is present in every conversation — **you do not need to invoke `/unlimited-token-mode` manually**. The skill itself is loaded only when you need templates, scripts, or the full criteria.
+
+### Option 2: Any agent framework
+
+Inject `preset/prompt-prefix.md` as part of the system prompt, and make `SKILL.md` and `templates/` readable to the model.
+
+### Validator
+
+```bash
+python scripts/selftest.py                     # validator self-test, all cases should pass
+python scripts/unlimited_lint.py <artifact>    # validate a decision log / run report / task brief
+python scripts/unlimited_lint.py <artifact> --strict
+```
+
+---
+
+## Boundaries
+
+- For read-only, one-off small tasks the full kit is waste — use the light gear.
+- If the **framework itself** already enforces counting and verification (harness injection), contracts 2 and 4 reduce to "confirm the injection exists".
+- This mode treats **process defects**, not capability limits. It stops the model from making known mistakes; it does not make it smarter.
+
+---
+
+## Origin
+
+The problem list and measured data come from `AGENT-CAPABILITY-REPORT.md` in [karminski/deepseek-v4.1-flash-1017-issue-pov](https://github.com/karminski/deepseek-v4.1-flash-1017-issue-pov), plus the author's usage notes.
+
+The author's one-line summary: **it writes code just fine, but using it for AIOps requires keeping your wits about you.**
+
+---
+
+# 中文
+
+[English](#unlimited-token-mode) | **中文**
 
 > 又名 **白饭管够模式**。
 

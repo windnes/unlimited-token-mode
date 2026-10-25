@@ -23,6 +23,12 @@
 > - **缩进 ≥2 空格**的围栏 = `- 证据:` 这类字段的值，正文会被保留并参与校验。
 >   v2 把两种围栏一视同仁地清空，于是本模板照原样跑 `--kind program` 直接报
 >   `PRG-FIELD-EMPTY`——模板自己过不了自己的校验。
+>
+> **证据档（v2.2）**：装了 `utc-ledger` 且框架发出 `tool/ptc-dispatch` 事件时，
+> 内层调用会以 `scope: "inner"` 落账，`command` 是真实命令、`exit` 来自真实执行。
+> 此时 `--ledger` 校验是 `ledger` 档，**证据里的 `exit=` 必须与该内层记录一致**。
+> 若账本里只有外层 `run_code` 记录，证据档降为 `source-literal` 并给
+> `LEDGER-EXECUTION-UNPROVEN` 警告——这一档不证明命令被执行过。
 
 ````text
 ## 程序 <n> @ <ISO 时间>

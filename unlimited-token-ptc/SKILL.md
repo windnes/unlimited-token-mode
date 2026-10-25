@@ -199,18 +199,27 @@ python scripts/selftest.py    # 13 项：core 一致性 + program 类型 + 对�
 1. **不提高能力上限。** 它只让失败可见，不让模型变聪明。
 2. **`shape-only` 与 `source-literal` 两档都不能证明执行过。**
    没装插件时只能看形态；装了插件但账本里只有外层 `run_code` 时，
-   只能证明命令写在源码里。只有账本里存在非 `run_code` 记录，才是可证伪的 `ledger` 档。
+   只能证明命令写在源码里。只有账本里存在 `scope: "inner"` 的 PTC 内层记录
+   （或非 `run_code` 的外层工具记录），才是可证伪的 `ledger` 档。
 3. **启发式永不判失败。** 词元相似度这类信号只作提示。
 4. **它校验的是留档，不是程序本身。** 一段逻辑错误的程序只要留档诚实，
    仍会通过——本版不替代代码审查。
-5. **`run_code` 内部的子调用是否全部落账，取决于框架。**
-   `utc-ledger` 旁听的是 `tool/call` 与 `tool/result` 事件；
-   PTC 内部的 `tools.<name>()` 若框架不发出这两个事件，账本就看不到。
+5. **`run_code` 内部的子调用会落账，前提是框架发出 `tool/ptc-dispatch` 事件。**
+   `utc-ledger` 除了 `tool/call` 与 `tool/result`，还旁听 PTC 专用的
+   `tool/ptc-dispatch-start` 与 `tool/ptc-dispatch`（配对字段 `subCallId`）。
+   落账时 `scope: "inner"`，`tool` 是内层真实工具名，`command` 是**真实要执行的命令**，
+   `exit` 从内容里的 `[exit code: N]` 解析。
 
-   **v2.1 实测更正**：这种情况下比对不会「因找不到调用而失败」，而是**反过来通过**——
-   账本里记录的是整段程序源码与程序返回值，命令字面量出现在源码里就能匹配上。
-   现在校验器会把这种情形标成 `证据档 source-literal` 并给
-   `LEDGER-EXECUTION-UNPROVEN` 警告，`--strict` 下判失败。
+   **这解决了两件事**：
+   (a) 证据档能真正升到 `ledger`——命令与退出码都来自真实执行，不是源码字面量；
+   (b) 不可逆判定改在内层做，扫的是真实命令而不是整段程序源码，
+       于是「程序注释/契约书正文里提到 `git push`」不再被误记成不可逆动作。
 
-   所以：`source-literal` 档只证明「源码里写了这条命令」，不证明「它被执行过」。
-   报告里引用这类证据时必须自己写明这一点，不能当成 `ledger` 档用。
+   **仍然会退化**：若框架没有发出 dispatch 事件（老版本 DSH），
+   账本里只剩外层 `run_code` 记录，校验器会标成
+   `证据档 source-literal` 并给 `LEDGER-EXECUTION-UNPROVEN` 警告，`--strict` 下判失败。
+   此时 `source-literal` 档只证明「源码里写了这条命令」，不证明「它被执行过」，
+   报告里引用这类证据时必须自己写明这一点。
+
+   **已知代价**：开启内层落账后账本行数约为原来的 3 倍
+   （实测：外层 158 条对应内层 491 条）。

@@ -123,9 +123,16 @@ function describeCall(toolName, args) {
   }
 }
 
-/** 从 tool result 里抽纯文本输出与错误标志。 */
+/** 从 tool result 里抽纯文本输出与错误标志。
+ *
+ * 返回值同时给出 `raw`（未裁剪全文）与 `output`（裁剪后的落账文本）。
+ * **exit 必须从 raw 里嗅探**：`[exit code: N]` 通常在输出末尾，
+ * 先 clip(20000) 再嗅探的话，长输出的退出码会落在窗口之外，
+ * exit 变成 null，于是「明明是 exit 0」的命令在账本里没有退出码，
+ * 任何声称 exit=0 的证据都会被判成 LEDGER-EXIT-MISMATCH。
+ */
 function describeResult(message) {
-  if (!message) return { output: '', isError: false }
+  if (!message) return { output: '', raw: '', isError: false }
   const content = Array.isArray(message.content) ? message.content : []
   const parts = []
   for (const item of content) {
@@ -134,7 +141,8 @@ function describeResult(message) {
     else if (typeof item.text === 'string') parts.push(item.text)
     else if (item.type === 'image') parts.push('[image]')
   }
-  return { output: clip(parts.join('\n'), 20000), isError: message.isError === true }
+  const raw = parts.join('\n')
+  return { output: clip(raw, 20000), raw, isError: message.isError === true }
 }
 
 /** 从输出里嗅探退出码：多数工具会在末尾打印 `[exit code: N]`。 */
@@ -153,28 +161,34 @@ export function apply(ctx, config = {}) {
   const injectState = config.injectState !== false
   const stateIntervalSteps = Number(config.stateIntervalSteps ?? 1)
   const irreversible = [...DEFAULT_IRREVERSIBLE, ...(config.irreversiblePatterns ?? [])]
+  /* 内层不可逆判定接管开关。默认开：内层拿到的是真实命令，比外层源码可靠得多。
+     关掉会退回 v2 行为（扫整段 run_code 源码，散文会误报），只为兼容保留。 */
+  const innerDispatchIrreversible = config.innerDispatchIrreversible !== false
 
   /** callId -> 调用记录；只在内存里，用于把 call 与 result 配对。 */
   const pending = new Map()
   /** 每个 session 的累计计数（会话内进程内有效；权威数字仍以 ledger 文件为准）。 */
   const perSession = new Map()
   let seq = 0
-  let fh = null
 
   function ensureDir() {
     const dir = path.dirname(ledgerPath)
     try { fs.mkdirSync(dir, { recursive: true }) } catch {}
   }
 
+  /**
+   * 追加一条记录。
+   *
+   * **必须同步落盘。** 原先用 createWriteStream，记录先进进程内缓冲区：
+   * 一旦程序被 timeoutMs 杀掉、或进程异常退出，缓冲区里的记录就丢了 ——
+   * 而账本是审计日志，「记录丢失」等于「动作没发生」，会把被执行过的命令
+   * 洗成没执行过。审计日志的可信度依赖写入即落盘。
+   */
   function append(record) {
     ensureDir()
-    if (fh === null) {
-      try { fh = fs.createWriteStream(ledgerPath, { flags: 'a' }) } catch { fh = undefined }
-    }
     const line = JSON.stringify(record) + '\n'
     try {
-      if (fh && fh !== undefined) fh.write(line)
-      else fs.appendFileSync(ledgerPath, line)
+      fs.appendFileSync(ledgerPath, line)
     } catch {
       /* 账本写不进去不应该弄死会话；lint 侧会因为缺记录而判失败，这是有意的偏向 */
     }
@@ -189,8 +203,62 @@ export function apply(ctx, config = {}) {
     return s
   }
 
+  /**
+   * 内层 PTC 调用的 in-flight 记录：subCallId -> {name, command, target}。
+   * 框架在每次 `await tools.x(...)` 前后各 append 一个事件
+   * （dsh-tools/lib/index.js:1424 与 :1400），两者用 subCallId 配对。
+   */
+  const pendingSub = new Map()
+
   ctx.on('session/event', (session, event) => {
     const sessionId = session?.header?.id ?? 'unknown'
+
+    /* ---- 内层 PTC 调用：start ---- */
+    if (event.type === 'tool/ptc-dispatch-start') {
+      const d = event.data ?? {}
+      const name = d.name ?? 'unknown'
+      const { command, target } = describeCall(name, d.arguments)
+      const subCallId = String(d.subCallId ?? `anon-sub-${++seq}`)
+      pendingSub.set(subCallId, { name, command, target })
+      /* 内层命令是真实要被执行的那一条，不可逆判定在这里做（见下方说明）。 */
+      return
+    }
+
+    /* ---- 内层 PTC 调用：结果 ---- */
+    if (event.type === 'tool/ptc-dispatch') {
+      const d = event.data ?? {}
+      const subCallId = String(d.subCallId ?? '')
+      const meta = pendingSub.get(subCallId) ?? (() => {
+        const parsed = describeCall(d.name ?? 'unknown', d.arguments)
+        return { name: d.name ?? 'unknown', command: parsed.command, target: parsed.target }
+      })()
+      pendingSub.delete(subCallId)
+
+      const content = Array.isArray(d.content) ? d.content : []
+      const { output, raw } = describeResult({ content, isError: d.isError === true })
+      const isError = d.isError === true
+      /* 从**未裁剪**全文嗅探退出码：裁剪窗口会把末尾的 [exit code: N] 切掉。 */
+      const exit = sniffExit(raw, isError)
+
+      const s = touchSession(sessionId)
+      s.calls += 1
+      /* 内层接管不可逆判定：扫的是**真实要执行的命令**，不是整段程序源码，
+         于是「程序里写的散文」不再被记成不可逆动作。 */
+      const isIrreversible = innerDispatchIrreversible
+        ? detectsIrreversible(meta.command, meta.target, irreversible)
+        : false
+      if (isIrreversible) {
+        s.irreversibleSeen += 1
+        s.irreversibleUngated += 1
+      }
+
+      append({
+        kind: 'result', t: new Date().toISOString(), seq: ++seq, session: sessionId,
+        callId: subCallId, tool: meta.name, command: meta.command, target: meta.target,
+        scope: 'inner', exit, error: isError, irreversible: isIrreversible, output,
+      })
+      return
+    }
 
     if (event.type === 'tool/call') {
       const toolName = event.data?.name ?? 'unknown'
@@ -206,7 +274,12 @@ export function apply(ctx, config = {}) {
       const s = touchSession(sessionId)
       s.calls += 1
 
-      const isIrreversible = detectsIrreversible(command, target, irreversible)
+      /* 外层 run_code 的 command 是**整段程序源码**，用它判不可逆会把源码里的
+         散文、注释、契约书正文全算进去（v2 实测 12 次全部是误报）。
+         run_code 本身不可逆时由内层 dispatch 判定，这里只对**非 PTC 外层工具**判。 */
+      const isIrreversible = toolName === 'run_code'
+        ? false
+        : detectsIrreversible(command, target, irreversible)
       if (isIrreversible) {
         s.irreversibleSeen += 1
         s.irreversibleUngated += 1
@@ -225,8 +298,8 @@ export function apply(ctx, config = {}) {
       const meta = pending.get(callId) ?? { toolName: 'unknown', command: '', target: '', isIrreversible: false }
       pending.delete(callId)
       const message = event.data?.message
-      const { output, isError } = describeResult(message)
-      const exit = sniffExit(output, isError)
+      const { output, raw, isError } = describeResult(message)
+      const exit = sniffExit(raw, isError)
       append({
         kind: 'result', t: new Date().toISOString(), seq: ++seq, session: sessionId,
         callId, tool: meta.toolName, command: meta.command, target: meta.target,
@@ -291,7 +364,6 @@ export function apply(ctx, config = {}) {
     }, { prepend: true })
   }
 
-  ctx.effect(() => () => {
-    try { fh?.end?.() } catch {}
-  })
+  /* 同步写入，无缓冲区需要收尾。 */
+  ctx.effect(() => () => {})
 }

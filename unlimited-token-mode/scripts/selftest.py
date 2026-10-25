@@ -53,6 +53,22 @@ def run_lint(path: str, *extra: str) -> tuple[int, str]:
     return proc.returncode, out
 
 
+PLUGIN_DIR = os.path.normpath(os.path.join(HERE, "..", "plugins"))
+
+
+def run_node(script: str) -> tuple[int, str]:
+    """跑 plugins 下的 node 测试。node 缺失时返回 -1，由调用方判失败。"""
+    exe = shutil.which("node")
+    if not exe:
+        return -1, "找不到 node 可执行文件"
+    proc = subprocess.run(
+        [exe, os.path.join(PLUGIN_DIR, script)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=PLUGIN_DIR,
+    )
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))
+
+
 def main() -> int:
     work = tempfile.mkdtemp(prefix="utc-selftest-")
     try:
@@ -205,6 +221,15 @@ def main() -> int:
         except Exception:
             pass
         check("--json 输出可被解析", isinstance(parsed, dict) and "evidence_tier" in parsed, out)
+
+        # ---------------- 7. 插件的不可逆识别与内层落账 ----------------
+        print("--- 7. 插件的不可逆识别与内层落账 ---")
+        rc, out = run_node("test-irreversible.mjs")
+        check("不可逆识别：散文不误报、真命令不漏报",
+              rc == 0 and "11/11" in out, out[-800:])
+        rc, out = run_node("test-dispatch.mjs")
+        check("内层 PTC 调用落账：scope/exit/不可逆接管",
+              rc == 0 and "11/11" in out, out[-800:])
 
     finally:
         shutil.rmtree(work, ignore_errors=True)

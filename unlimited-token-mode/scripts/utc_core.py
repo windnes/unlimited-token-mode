@@ -391,6 +391,10 @@ class LedgerRecord:
     output: str
     exit_code: int | None
     time: str
+    # "inner" = PTC 程序内部的真实工具调用（tool/ptc-dispatch）；
+    # 其它/缺省 = 外层调用。内层记录的命令与退出码来自真实执行，
+    # 外层 run_code 记录的命令是整段程序源码、exit 是整段程序的退出码。
+    scope: str = "outer"
 
 
 class Ledger:
@@ -424,6 +428,7 @@ class Ledger:
                     output=str(obj.get("output", "")),
                     exit_code=obj.get("exit"),
                     time=str(obj.get("t", "")),
+                    scope=str(obj.get("scope", "outer")),
                 )
             )
         self.loaded = True
@@ -442,6 +447,10 @@ class Ledger:
         命令与输出才对应到一次真实工具执行。
         """
         res = self.results()
+        # 内层 PTC 调用（tool/ptc-dispatch）落账后，命令与退出码都来自真实执行，
+        # 这才算「执行可证」。仅凭 tool != "run_code" 会把任何旁路工具记成可证。
+        if any(r.scope == "inner" for r in res):
+            return True
         return bool(res) and any(r.tool != "run_code" for r in res)
 
     def candidates(self, claimed_cmd: str) -> list["LedgerRecord"]:
@@ -469,18 +478,22 @@ class Ledger:
             if want_anchors:
                 if not want_anchors <= cmd_anchors(real):
                     continue
+            # 内层记录优先：它对应一次真实工具执行，外层 run_code 记录只是程序源码。
+            # 同分时若不区分，源码里写到过的命令会抢走真实执行的记录。
+            bonus = 0.5 if rec.scope == "inner" else 0.0
             if want in real or real in want:
-                scored.append((1.0, order, rec))
+                scored.append((1.0 + bonus, order, rec))
                 continue
             real_tokens = content_tokens(real)
             if not want_tokens or not real_tokens:
                 continue
             overlap = len(want_tokens & real_tokens) / len(want_tokens | real_tokens)
             if overlap >= 0.55:
-                scored.append((overlap, order, rec))
+                scored.append((overlap + (0.5 if rec.scope == "inner" else 0.0), order, rec))
         # 得分并列时偏向**更晚**的记录：同一条命令可能在多段程序源码里都出现过，
         # 按插入顺序取最早那条会让「最近一次真实执行」永远轮不到，
         # 进而拿一条早已作废的记录去比对输出，把诚实证据判成改写。
+        # 先按得分（含内层加权），再按时间先后偏向更晚的记录。
         scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
         return [rec for _, _, rec in scored]
 

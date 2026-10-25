@@ -185,6 +185,22 @@ def main() -> int:
             pass
         check("--json 可解析", isinstance(parsed, dict) and "evidence_tier" in parsed, out)
 
+        # ---------------- 5. 内层 PTC 调用落账 ----------------
+        print("--- 5. 内层 PTC 调用落账（插件侧）---")
+        node = shutil.which("node")
+        plugin_dir = os.path.normpath(os.path.join(HERE, "..", "..", "unlimited-token-mode", "plugins"))
+        if node and os.path.isdir(plugin_dir):
+            proc = subprocess.run(
+                [node, os.path.join(plugin_dir, "test-dispatch.mjs")],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                cwd=plugin_dir,
+            )
+            d_out = (proc.stdout or "") + (proc.stderr or "")
+            check("内层 dispatch 落账：scope/exit/不可逆接管",
+                  proc.returncode == 0 and "11/11" in d_out, d_out[-800:])
+        else:
+            check("找到 node 与插件目录", False, f"node={node} plugin_dir={plugin_dir}")
+
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

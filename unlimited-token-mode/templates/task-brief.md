@@ -3,6 +3,11 @@
 > 用法：开工前把下面所有 `{{...}}` 填满。**留空 = 未定义 = 不允许开工**。
 > 填完用 `python scripts/unlimited_lint.py <本文件> --kind brief` 校验。
 > 本文件是契约 1（歧义契约）的载体：把"我会怎么理解"提前变成"我们约定了怎么理解"。
+>
+> 校验会拦这些：目标不可度量（`BRF-GOAL-VAGUE`）、判据没有可执行命令
+> （`BRF-CRITERIA-NOCMD`）、歧义表为空或没选定（`BRF-NO-AMBIGUITY` /
+> `BRF-AMBIGUITY-UNRESOLVED`）、状态来源没指路径（`BRF-STATE-SOURCE`）、
+> 把循环写在 thinking 里（`BRF-LOOP-IN-HEAD`）。
 
 ---
 

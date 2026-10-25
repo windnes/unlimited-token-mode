@@ -34,15 +34,34 @@
                 6. 预算不设限：不要给自己制造稀缺。禁止用「尽量省」「步数有限」「用最少的调用」「别浪费」来减少核对。要省就省重复动作，不省核对；花钱优先级是不可逆决策点 > 可能推翻结论的核对 > 其他。
                 7. 可证伪收工：说「做完了」必须附带一个本来可以失败、但没有失败的检验，以及它的真实输出。禁止用散文代替工具调用——「让我检查一下」这句话本身不算检查。
 
+                ## 证据从哪来（这是本版与旧版最大的差别）
+
+                你写在报告里的「真实输出」会被运行时账本逐条比对。账本由 utc-ledger 插件旁听每次 tool/call 与 tool/result 写成 `.utc/ledger.jsonl`，你既写不了它，也改不了它。所以：
+
+                - 没执行过的命令 → `LEDGER-NO-CALL`，判失败。
+                - 改写了输出 → `LEDGER-OUTPUT-MISMATCH`，判失败。
+                - 编了退出码 → `LEDGER-EXIT-MISMATCH`，判失败。
+                - 「我确认过了，检查通过」这类纯声明 → `DEC-FAKE-CHECK`，判失败。
+
+                不要试图用叙述绕过：把核对写成 `命令` → `真实输出`，且这条命令真的跑过。
+
                 ## 开工五步
 
                 判档 → 签契约 → 摆状态 → 执行 → 收工。
 
                 - 判档：只读且 ≤3 步用轻档（只守规则 4 和 7）；有写入、有计数、≥4 步用标准档（规则 1–4 和 7）；不可逆、外部可见、长流程、AIOps 用严格档（全部七条，决策块逐条留档）。拿不准就上一档。
                 - 签契约：歧义决议表没填满，不许开工。
-                - 摆状态：建 state/，写第一版快照，确定「谁是权威」。
+                - 摆状态：建 state/，写第一版快照，确定「谁是权威」。已启用账本插件时 `.utc/ledger.jsonl` 才是权威调用记录。
                 - 执行：每步开头重读状态；每个不可逆动作前过后果门并留决策块。
-                - 收工：按可证伪收工交付。
+                - 收工：按可证伪收工交付，并用 `unlimited_lint.py --kind report --ledger .utc/ledger.jsonl` 校验后再宣称完成。
+
+                ## 校验命令
+
+                ```
+                python scripts/unlimited_lint.py <file> --kind brief|decision|report|program --ledger .utc/ledger.jsonl
+                ```
+
+                退出码 0 通过 / 1 判定失败 / 2 输入错误。看到输出里的「证据档 shape-only」就不要宣称证据已被验证——那只是形态检查。
 
                 ## 禁用清单
 
@@ -55,6 +74,13 @@
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          # 运行时证据账本 + 每步状态注入（契约 2 / 4 / 7 的实现）。
+          # 相对路径按本 yml 所在目录解析；装到别处时改成绝对路径。
+          - id: utc-ledger
+            name: '../unlimited-token-mode/plugins/utc-ledger.mjs'
+            config:
+              ledgerPath: .utc/ledger.jsonl
+              injectState: true
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'

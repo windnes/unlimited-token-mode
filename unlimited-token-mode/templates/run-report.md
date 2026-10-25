@@ -1,9 +1,21 @@
 # 运行报告（run report）
 
 > 契约 7（可证伪收工）的载体。**"完成"不是一句声明，是一组能失败的检查及其真实输出。**
-> 校验：`python scripts/unlimited_lint.py <本文件> --kind report`
+>
+> 校验（推荐，能查出编造与改写）：
+> ```bash
+> python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl
+> ```
+> 没有账本时只能做形态检查：
+> ```bash
+> python scripts/unlimited_lint.py run-report.md --kind report
+> ```
 >
 > 写报告时唯一禁止的措辞：`应该可以`、`看起来没问题`、`基本完成`、`已修复（无输出）`。
+>
+> **§2 的「真实输出」栏会与运行时账本逐条比对**：命令必须真的执行过
+> （否则 `LEDGER-NO-CALL`），输出必须是真实输出的连续片段
+> （否则 `LEDGER-OUTPUT-MISMATCH`）。把输出包进反引号是允许的，改写不是。
 > 每条"已完成"后面必须跟一条**如果实现错了就会失败**的命令输出。
 
 ---

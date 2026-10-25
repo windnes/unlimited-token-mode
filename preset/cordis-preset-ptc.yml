@@ -70,6 +70,23 @@
 
                 这些写法出现在程序里就重写：`catch {}`、`return { ok: true }`、`try { … } catch (e) { /* ignore */ }`、把变量当账本、一个程序两个不可逆动作、被截断后说「已完成」。
 
+                ## 证据从哪来（本版核心）
+
+                你写在 program-log 里的证据会被运行时账本逐条比对。账本由 utc-ledger 插件旁听 tool/call 与 tool/result 写成 `.utc/ledger.jsonl`，你写不了它：
+
+                - 证据只有 `exit=0` 没有输出 → `PRG-EVIDENCE-VALUE`，判失败（exit=0 只说明没崩，什么都不说明）。
+                - 证据里的命令没在账本里出现过 → `LEDGER-NO-CALL`，判失败。
+                - exit 或输出与账本不符 → `LEDGER-EXIT-MISMATCH` / `LEDGER-OUTPUT-MISMATCH`，判失败。
+                - 可失败性写「无法失败 / 总是通过」→ `PRG-NO-FAILABILITY`，判失败。
+
+                ## 校验命令
+
+                ```
+                python scripts/ptc_lint.py <file> --kind brief|decision|report|program --ledger .utc/ledger.jsonl
+                ```
+
+                退出码 0 通过 / 1 判定失败 / 2 输入错误。
+
                 需要模板、脚本、完整判据和实测数字时，加载 unlimited-token-ptc 技能。
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
@@ -77,6 +94,13 @@
               maxBytes: 65536
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
+          # 运行时证据账本 + 每步状态注入。与标准版共用同一个插件文件：
+          # 证据的来源与模式无关，PTC 只在留档格式上多一个 program 类型。
+          - id: utc-ledger
+            name: '../unlimited-token-mode/plugins/utc-ledger.mjs'
+            config:
+              ledgerPath: .utc/ledger.jsonl
+              injectState: true
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
             disabled: !!js process.platform === 'win32'

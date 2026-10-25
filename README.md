@@ -71,6 +71,8 @@ Three gears keyed to **irreversibility × scale**: light (read-only, instant rol
 ```
 unlimited-token-mode/                 # ← STANDARD EDITION skill
 ├── SKILL.md                          # Main skill file (seven contracts, three gears, five startup steps, banned-phrase list)
+├── plugins/
+│   └── utc-ledger.mjs                # Runtime evidence ledger + per-step state injection (contracts 2 / 4 / 7)
 ├── references/
 │   ├── evidence-map.md               # Measured numbers and sources per contract, plus disproved practices (don't copy them)
 │   ├── consequence-gate.md           # Full consequence-gate derivation template + two worked examples
@@ -81,8 +83,12 @@ unlimited-token-mode/                 # ← STANDARD EDITION skill
 │   ├── decision-log.md               # Decision block (second/third-order consequences)
 │   └── run-report.md                 # Falsifiable finish report
 └── scripts/
-    ├── unlimited_lint.py             # Artifact validator
-    └── selftest.py                   # Validator self-test (19 cases)
+    ├── utc_core.py                   # The single judgement engine (byte-identical copy in the PTC edition)
+    ├── unlimited_lint.py             # CLI shell -> utc_core.main
+    ├── adversarial_suite.py          # 23 cases (17 attacks + 6 honest) × default/strict = 46 assertions
+    ├── ab_compare.py                 # Same cases fed to v1 and v2, verdict table
+    ├── e2e_verify.py                 # Replays a real session ledger against its report
+    └── selftest.py                   # Validator self-test (15 checks)
 
 unlimited-token-ptc/                  # ← PTC EDITION skill
 ├── SKILL.md                          # Same seven contracts, re-stated for a run_code-only harness
@@ -98,14 +104,18 @@ unlimited-token-ptc/                  # ← PTC EDITION skill
 │   ├── run-report.md                 # Falsifiable finish, §2 cites the program ledger
 │   └── program-log.md                # Program ledger — one block per run_code program (validated by ptc_lint.py)
 └── scripts/
-    ├── ptc_lint.py                   # Validator for brief / report / decision / program
-    └── selftest.py                   # Validator self-test (24+ cases)
+    ├── utc_core.py                   # Byte-identical copy of the standard engine (sha256-checked by selftest)
+    ├── ptc_lint.py                   # CLI shell -> utc_core.main
+    └── selftest.py                   # Validator self-test (13 checks)
 
 preset/
 ├── cordis-preset.yml                 # Standard edition preset block
 ├── prompt-prefix-ptc.md              # PTC edition resident prefix
 ├── cordis-preset-ptc.yml             # PTC edition preset block
 └── prompt-prefix.md                  # Standard edition resident prefix
+
+install.py                            # Install skills + preset blocks into a profile, with backups
+sync_prefix.py                        # Project prompt-prefix*.md into the preset persona.prefix (--check)
 ```
 
 Also included:
@@ -123,13 +133,26 @@ Also included:
 
 Pick the edition that matches your harness. Both are installed the same way.
 
-1. Copy the skill directory to `~/.dsh/preset-skills/`:
-   - standard edition → `unlimited-token-mode/` copied to `~/.dsh/preset-skills/unlimited-token-mode`
-   - PTC edition → `unlimited-token-ptc/` copied to `~/.dsh/preset-skills/unlimited-token-ptc`
-2. Insert the matching preset block into `~/.dsh/profiles/<your-profile>/cordis.patch.yml`:
-   - standard edition → `preset/cordis-preset.yml`
-   - PTC edition → `preset/cordis-preset-ptc.yml`
-3. Restart DSH and pick **"无限token标准版"** or **"无限tokenPTC版"** from the mode dropdown in the session header.
+```bash
+# installs both editions: skill copies + preset blocks, with timestamped backups
+python install.py --profile <your-profile>
+
+# or just one
+python install.py --profile <your-profile> --only std
+python install.py --profile <your-profile> --only ptc
+
+# see what it would do, change nothing
+python install.py --profile <your-profile> --dry-run
+```
+
+Then restart DSH and pick **"无限token标准版"** or **"无限tokenPTC版"** from the mode dropdown in the session header.
+
+What the installer does that a manual copy does not:
+
+1. **Copies the whole preset block**, not a hand-trimmed one. Presets do not inherit from each other, so a trimmed block means missing tools.
+2. **Rewrites the plugin path to an absolute path.** Relative paths in DSH resolve against *whatever loads them* — a top-level `--patch` resolves against the patch file's own directory, so a relative path silently stops working as soon as the block moves. This is the single most common way the ledger plugin ends up loaded-but-dead.
+3. **Removes duplicate preset ids before writing.** If you previously copied a preset block in by hand, the registry throws `Duplicate agent preset` and *the whole preset fails to load*. The installer strips any existing block with the same id first.
+4. **Backs up** `cordis.patch.yml` with a timestamp before touching it.
 
 You can install both. They coexist: different preset ids, different skill names, same `preset-skills` directory.
 
@@ -189,11 +212,12 @@ Work through the steps in order. Report the result of each step before starting 
    the result "should" be.
    a. Skill files present: count the files under each installed
       $DSH_HOME/preset-skills/<skill-name> and compare with the repo copy.
-      Standard edition: 10 files. PTC edition: 12 files.
+      Standard edition: 15 files. PTC edition: 13 files.
    b. Validator self-test, one per installed edition:
       python $DSH_HOME/preset-skills/unlimited-token-mode/scripts/selftest.py
       python $DSH_HOME/preset-skills/unlimited-token-ptc/scripts/selftest.py
-      Each prints its own case count and a pass/fail summary. Paste both.
+      Expected: 15/15 and 13/13. Each prints its own case count and a pass/fail
+      summary. Paste both. A failure here is not "probably fine" - stop.
    c. Top-level entry count of cordis.patch.yml: count before the install and after.
       It should increase by exactly the number of editions you installed. Zero-dependency check:
       grep -c "^- " <path-to-cordis.patch.yml>
@@ -204,9 +228,11 @@ Work through the steps in order. Report the result of each step before starting 
       Find that directory first - it is the one containing
       node_modules/@deepseek-ai/dsh-agent-preset - then run:
       NODE_PATH="<dsh-install-dir>/node_modules" node -e "const yaml=require('yaml'),fs=require('fs'); const d=yaml.parse(fs.readFileSync(process.argv[1],'utf8')); const ps=d.filter(e=>e.insert).flatMap(e=>e.insert).filter(e=>String(e.id).startsWith('preset-unlimited-token')); console.log('entries:',d.length); for (const p of ps) console.log('preset:', p.config.id+' / '+p.config.name+' / order '+p.config.order+' / '+p.config.plugins.length+' plugins / presentation '+(p.config.plugins.find(x=>x.id==='tool-presentation')?.config.mode ?? 'native'));" <path-to-cordis.patch.yml>
-      Expected: entries = (the count from step c), and one line per installed edition -
-      unlimited-token / 无限token标准版 / order 5 / 20 plugins / presentation native
-      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 21 plugins / presentation ptc
+      Expected: entries = (the count from step c), and exactly one line per installed
+      edition - if any line appears twice, an old hand-copied block is still there and
+      the registry will reject the whole preset with "Duplicate agent preset":
+      unlimited-token / 无限token标准版 / order 5 / 21 plugins / presentation native
+      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 22 plugins / presentation ptc
       Warnings about unresolved !!js tags are expected and harmless.
    e. PTC only: confirm the host can actually compose PTC. The PTC preset needs
       ctx.ptcRuntime, which @deepseek-ai/dsh-ptc-runtime-node provides. Check that
@@ -232,23 +258,52 @@ Constraints:
 
 ### Validator
 
-Standard edition (`unlimited-token-mode/scripts/`):
-
 ```bash
-python scripts/selftest.py                     # validator self-test, all cases should pass
-python scripts/unlimited_lint.py <artifact>    # validate a decision log / run report / task brief
-python scripts/unlimited_lint.py <artifact> --strict
+# standard edition
+python unlimited-token-mode/scripts/unlimited_lint.py <artifact> --kind brief|decision|report
+
+# PTC edition (adds a fourth kind, `program`)
+python unlimited-token-ptc/scripts/ptc_lint.py <artifact> --kind brief|decision|report|program
+
+# with the runtime ledger: upgrades shape-checking into falsifiable checking
+python unlimited-token-mode/scripts/unlimited_lint.py report.md --kind report --ledger .utc/ledger.jsonl
+
+# self-tests
+python unlimited-token-mode/scripts/selftest.py    # 15 checks
+python unlimited-token-ptc/scripts/selftest.py     # 13 checks
 ```
 
-PTC edition (`unlimited-token-ptc/scripts/`):
+Exit codes: `0` pass / `1` judgement failed / `2` bad input or usage. A crash is never a valid outcome.
 
-```bash
-python scripts/selftest.py                     # validator self-test, all cases should pass
-python scripts/ptc_lint.py <artifact>          # --kind brief | report | decision | program (auto-detected if omitted)
-python scripts/ptc_lint.py <artifact> --strict # adds description length, multi-intent, swallowed-exception checks
-```
+#### Evidence tiers — not all checks are equal
 
-The PTC validator adds a fourth artifact kind, `program`: the program ledger (`templates/program-log.md`), one block per `run_code` program. It refuses a `判决: pass` that has no `exit=` line, no numeric evidence, or a placeholder in the falsifiability field — because a verdict the program computed about itself is not a check.
+| Tier | When | What it proves | What it cannot prove |
+|---|---|---|---|
+| `ledger` | `--ledger` given | the command really ran, the output was not rewritten, the exit code matches | — |
+| `shape-only` | no ledger | the artifact has commands, has shaped output, and contains no pure-declaration check | **nothing about whether any of it actually ran** |
+
+The CLI prints the tier it used. `shape-only` is a weaker guarantee and says so.
+
+#### How the ledger makes evidence falsifiable
+
+`plugins/utc-ledger.mjs` listens to every `tool/call` and `tool/result` and appends them to `.utc/ledger.jsonl`. The model cannot write that file. So when a report claims a command and its output, the validator can settle it objectively:
+
+- command never executed → `LEDGER-NO-CALL`
+- output rewritten → `LEDGER-OUTPUT-MISMATCH`
+- exit code fabricated → `LEDGER-EXIT-MISMATCH`
+
+This is what closes the hole that v1 could not close: in v1 the "real output" cell was written by the model, so "copy the field descriptions, then write *I confirmed it*" passed. String heuristics cannot tell a real check from a well-copied fake. Runtime records can.
+
+The same plugin also injects per-step state (call count, error count, irreversible-action count) — that is contract 2, implemented by the runtime instead of demanded of the model.
+
+#### v1 vs v2 on the same 23 cases
+
+| | correct | let through | false-alarm | crashed |
+|---|---|---|---|---|
+| v1 | 8 | 14 | 1 | 0 |
+| v2 | 23 | 0 | 0 | 0 |
+
+Reproduce with `python unlimited-token-mode/scripts/ab_compare.py <v1 scripts dir>`. The 23 cases are 17 attacks plus **6 honest artifacts** — the honest half matters, because a validator that only catches bad guys can be written to always say no, and v1's false alarm was a genuine `df -h` check rejected as fake.
 
 ---
 
@@ -257,6 +312,9 @@ The PTC validator adds a fourth artifact kind, `program`: the program ledger (`t
 - For read-only, one-off small tasks the full kit is waste — use the light gear.
 - If the **framework itself** already enforces counting and verification (harness injection), contracts 2 and 4 reduce to "confirm the injection exists".
 - This mode treats **process defects**, not capability limits. It stops the model from making known mistakes; it does not make it smarter.
+- **`shape-only` proves nothing about execution.** Without the ledger plugin the validator can only check shape. It says so on every run.
+- **It validates the record, not the intent.** A model determined to fool it can run an unrelated command and paste that command's real output. That hole is structural, and this mode does not pretend to close it.
+- **Heuristics never fail an artifact.** Token-similarity signals are advisory only — the v1 false alarm came from treating them as verdicts.
 - The PTC edition assumes a `run_code`-only harness. On a native-tool harness it is the wrong edition — its rules describe machinery that is not there.
 - The PTC edition cannot fix what the runtime hides: if a program is killed by `timeoutMs`, nothing it computed reaches the conversation. The countermeasure is structural (segment your work, write progress to disk as you go), not rhetorical.
 
@@ -346,6 +404,8 @@ PTC 版之所以存在，是因为标准版那七条契约搬到 `run_code` 下*
 ```
 unlimited-token-mode/                 # ← 无限token标准版技能
 ├── SKILL.md                          # 技能主文件（七条契约、三档齿轮、开工五步、禁用清单）
+├── plugins/
+│   └── utc-ledger.mjs                # 运行时证据账本 + 每步状态注入（契约 2 / 4 / 7）
 ├── references/
 │   ├── evidence-map.md               # 七条契约的实测数字、出处，以及已被证伪的错误做法
 │   ├── consequence-gate.md           # 后果门完整推演模板 + 两个 worked example
@@ -356,8 +416,12 @@ unlimited-token-mode/                 # ← 无限token标准版技能
 │   ├── decision-log.md               # 决策块（二阶三阶后果）
 │   └── run-report.md                 # 可证伪收工报告
 └── scripts/
-    ├── unlimited_lint.py             # 产物校验器
-    └── selftest.py                   # 校验器自测（19 个用例）
+    ├── utc_core.py                   # 唯一判定引擎（PTC 版有逐字节相同的拷贝）
+    ├── unlimited_lint.py             # CLI 外壳 -> utc_core.main
+    ├── adversarial_suite.py          # 23 例（17 攻击 + 6 诚实）× 默认/严格 = 46 条断言
+    ├── ab_compare.py                 # 同一批用例喂 v1 与 v2，出判定对照表
+    ├── e2e_verify.py                 # 把真实会话的账本与报告对账
+    └── selftest.py                   # 校验器自测（15 项）
 
 unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 ├── SKILL.md                          # 同样七条契约，按 run_code 口径重述
@@ -373,14 +437,18 @@ unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 │   ├── run-report.md                 # 可证伪收工，§2 引用程序账本
 │   └── program-log.md                # 程序账本，每个 run_code 程序一条（ptc_lint.py 校验）
 └── scripts/
-    ├── ptc_lint.py                   # 校验器，支持 brief / report / decision / program
-    └── selftest.py                   # 校验器自测（24+ 个用例）
+    ├── utc_core.py                   # 与标准版逐字节相同的引擎（selftest 校验 sha256）
+    ├── ptc_lint.py                   # CLI 外壳 -> utc_core.main
+    └── selftest.py                   # 校验器自测（13 项）
 
 preset/
 ├── cordis-preset.yml                 # 标准版预设块
 ├── prompt-prefix-ptc.md              # PTC 版常驻前缀
 ├── cordis-preset-ptc.yml             # PTC 版预设块
 └── prompt-prefix.md                  # 标准版常驻前缀
+
+install.py                            # 把技能与预设块装进 profile，自动备份
+sync_prefix.py                        # 把 prompt-prefix*.md 投影进预设的 persona.prefix（--check）
 ```
 
 另附：
@@ -398,13 +466,26 @@ preset/
 
 先选版本，再按同样两步装。两个都装也可以——它们共存：预设 id 不同、技能名不同、共用 `preset-skills` 目录。
 
-1. 把技能目录复制到 `~/.dsh/preset-skills/`：
-   - 标准版 → `unlimited-token-mode/` 复制到 `~/.dsh/preset-skills/unlimited-token-mode`
-   - PTC 版 → `unlimited-token-ptc/` 复制到 `~/.dsh/preset-skills/unlimited-token-ptc`
-2. 把对应的预设块 insert 进 `~/.dsh/profiles/<你的 profile>/cordis.patch.yml`：
-   - 标准版 → `preset/cordis-preset.yml`
-   - PTC 版 → `preset/cordis-preset-ptc.yml`
-3. 重启 DSH，在会话头部的模式下拉里选 **「无限token标准版」** 或 **「无限tokenPTC版」**。
+```bash
+# 两个版本一起装：技能副本 + 预设块，改前自动备份
+python install.py --profile <你的 profile>
+
+# 只装一个
+python install.py --profile <你的 profile> --only std
+python install.py --profile <你的 profile> --only ptc
+
+# 只看会做什么，不动文件
+python install.py --profile <你的 profile> --dry-run
+```
+
+然后重启 DSH，在会话头部的模式下拉里选 **「无限token标准版」** 或 **「无限tokenPTC版」**。
+
+安装器比手工复制多做四件事：
+
+1. **整段复制预设块**，不手动裁剪。预设之间没有继承机制，裁一刀就少一批工具。
+2. **把插件路径写成绝对路径**。DSH 里的相对路径按「谁加载它」解析——顶层 `--patch` 按 patch 文件自己所在的目录算，块一挪走相对路径就静默失效。这是账本插件「装上了但没跑」最常见的原因。
+3. **写入前先删同名条目**。如果你以前手工拷过同一份预设块，registry 会抛 `Duplicate agent preset`，**整个预设加载失败**。安装器会先清掉同 id 的旧块。
+4. **改前备份** `cordis.patch.yml`（带时间戳）。
 
 预设自带常驻前缀（七条硬规则 + 开工五步 + 禁用清单），每次对话都在，**不需要再手动 `/unlimited-token-mode`**。技能本身只在需要模板、脚本、完整判据时才加载。
 
@@ -520,6 +601,9 @@ PTC 校验器多出第四类产物 `program`：程序账本（`templates/program
 - 只读、一次性的小任务上全套是浪费——用轻档。
 - 如果**框架本身**已经强制了计数和核对（harness 注入），契约 2/4 只保留「确认注入存在」。
 - 这个模式治的是**流程缺陷**，不治能力上限。它让模型不犯已知的错，不会让它变聪明。
+- **`shape-only` 档证明不了执行过。** 没装账本插件时校验器只能看形态，而且每次运行都会明说。
+- **它校验的是留档，不是意图。** 一个铁了心要骗过它的模型，可以先跑一条无关命令，再把那条命令的真实输出贴进来。这个洞是结构性的，本模式不假装能堵。
+- **启发式永不判失败。** 词元相似度这类信号只作提示——v1 的误杀正是把提示当成了判决。
 - PTC 版假设宿主只给一个 `run_code`。在原生工具调用的宿主上，它是错的版本——它的规则描述的是并不存在的机制。
 - PTC 版治不了运行时藏起来的东西：程序被 `timeoutMs` 杀掉时，它算出的任何结果都进不了对话。对策是结构性的（分段提交、边跑边落盘），不是措辞性的。
 

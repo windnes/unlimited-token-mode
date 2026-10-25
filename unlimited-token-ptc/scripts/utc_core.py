@@ -120,22 +120,43 @@ FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
 
 
 def strip_fences(text: str) -> str:
+    """剥掉代码围栏，但保留「字段值围栏」。
+
+    两种围栏语义不同，不能一视同仁：
+    - 顶层围栏（行首无缩进）：格式示例或引用代码，里面的程序块不得被当成真实记录 -> 清空。
+    - 缩进围栏（>=2 空格）：`- 证据:` 这类字段的值，本身就是被校验的内容 -> 保留正文，只丢标记行。
+
+    v2 的洞：一律清空，于是模板自带的证据块被读成空字段，
+    templates/program-log.md 照原样跑 --kind program 直接报 PRG-FIELD-EMPTY。
+    """
     out: list[str] = []
     inside = False
+    keep = False
     marker = ""
     for line in text.splitlines():
         m = FENCE_RE.match(line)
         if m:
             token = m.group(1)
+            indent = len(line) - len(line.lstrip())
             if not inside:
                 inside, marker = True, token
-                out.append("")
+                keep = indent >= 2
+                # 保留型围栏整行跳过：留下空行会让 parse_fields 提前结束字段累积，
+                # 证据正文就挂不到 `- 证据:` 上，照样读成空字段。
+                if not keep:
+                    out.append("")
                 continue
             if token[0] == marker[0] and len(token) >= len(marker):
                 inside = False
+                keep = False
                 out.append("")
                 continue
-        out.append("" if inside else line)
+        if not inside:
+            out.append(line)
+        elif keep:
+            out.append(line)
+        else:
+            out.append("")
     return "\n".join(out)
 
 
@@ -191,7 +212,8 @@ SHELL_WORDS = (
 BACKTICK_CMD_RE = re.compile(r"`([^`\n]{2,2000})`")
 # 行首裸命令（有人不写反引号）
 LINE_CMD_RE = re.compile(
-    r"(?:^|\n)[ \t>$\w-]{0,8}((?:sudo\s+|env\s+)?(?:" + SHELL_WORDS + r")\b[^\n]{0,240})",
+    r"(?:^|\n)[ \t>$\w-]{0,8}((?:sudo\s+|env\s+)?(?:" + SHELL_WORDS + r")\b[^\n]{0,240})"
+    r"|(?:^|\n)[ \t]*\$?[ \t]*((?:await\s+)?tools\.[A-Za-z_][\w]*\s*\([^\n]{0,240})",
     re.IGNORECASE,
 )
 
@@ -199,10 +221,19 @@ CMD_META_RE = re.compile(r"[\s][-|/>&]{1,2}[\w$\{\(\[\"'./-]|[/\\][\w.-]+|\$\{|%
 KNOWN_CMD_RE = re.compile(r"^(?:sudo\s+|env\s+)?(?:" + SHELL_WORDS + r")\b", re.IGNORECASE)
 
 
+# PTC 的证据命令常常是 SDK 绑定调用而不是 shell 命令：
+#   await tools.read({ file_path: "state/run.json" })
+#   await tools.ops_bash({ command: "..." })
+# 模板示例与真实程序账本都会这么写，认不出来就会误报 PRG-EVIDENCE-CMD。
+TOOLS_CALL_RE = re.compile(r"^\$?\s*(?:await\s+)?tools\.[A-Za-z_][\w]*\s*\(")
+
+
 def looks_like_command(token: str) -> bool:
     token = token.strip()
     if len(token) < 2 or has_placeholder(token):
         return False
+    if TOOLS_CALL_RE.match(token):
+        return True
     if KNOWN_CMD_RE.match(token):
         return True
     if CMD_META_RE.search(token) and re.search(r"[A-Za-z]", token):
@@ -217,7 +248,8 @@ def extract_commands(text: str) -> list[str]:
         if looks_like_command(token):
             cmds.append(token)
     for m in LINE_CMD_RE.finditer(text):
-        token = m.group(1).strip()
+        # 该正则有两个分支（shell 裸命令 / tools.* 绑定），命中的分组不固定
+        token = next((g for g in m.groups() if g), "").strip()
         if len(token) >= 3:
             cmds.append(token)
     seen: set[str] = set()
@@ -239,6 +271,7 @@ EVIDENCE_OUT_RE = re.compile(
     r"|(?:→|->|=>|=|:|：)\s*-?\d"
     r"|exit\s*(?:code)?\s*[=:]?\s*-?\d"
     r"|\b(?:true|false)\b"
+    r"|@L\d+"                       # 行号引用：FAIL program @L12
     r"|\b\d{2,}\b",
     re.IGNORECASE,
 )
@@ -398,6 +431,19 @@ class Ledger:
     def results(self) -> list[LedgerRecord]:
         return [r for r in self.records if r.kind == "result"]
 
+    def execution_provable(self) -> bool:
+        """账本能否证明「这条命令真的被执行过」。
+
+        在 run_code 这种「整段程序一次调用」的工具面上，插件只看得见外层
+        `run_code`，看不见程序内部 `await tools.ops_bash(...)` 的真实调用，
+        于是账本里记录的 command 是**整段程序源码**、output 是**程序返回值**。
+        这时命令字面量出现在源码里就能匹配上，匹配成功只证明「源码里写了」，
+        不证明「跑过了」。只有当账本里存在非 run_code 的记录时，
+        命令与输出才对应到一次真实工具执行。
+        """
+        res = self.results()
+        return bool(res) and any(r.tool != "run_code" for r in res)
+
     def candidates(self, claimed_cmd: str) -> list["LedgerRecord"]:
         """找出可能对应这条声称的命令的账本记录。
 
@@ -415,8 +461,8 @@ class Ledger:
             return []
         want_tokens = content_tokens(want)
         want_anchors = cmd_anchors(want)
-        scored: list[tuple[float, LedgerRecord]] = []
-        for rec in self.results():
+        scored: list[tuple[float, int, LedgerRecord]] = []
+        for order, rec in enumerate(self.results()):
             real = norm_cmd(rec.command)
             if len(real) < 3:
                 continue
@@ -424,16 +470,19 @@ class Ledger:
                 if not want_anchors <= cmd_anchors(real):
                     continue
             if want in real or real in want:
-                scored.append((1.0, rec))
+                scored.append((1.0, order, rec))
                 continue
             real_tokens = content_tokens(real)
             if not want_tokens or not real_tokens:
                 continue
             overlap = len(want_tokens & real_tokens) / len(want_tokens | real_tokens)
             if overlap >= 0.55:
-                scored.append((overlap, rec))
-        scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [rec for _, rec in scored]
+                scored.append((overlap, order, rec))
+        # 得分并列时偏向**更晚**的记录：同一条命令可能在多段程序源码里都出现过，
+        # 按插入顺序取最早那条会让「最近一次真实执行」永远轮不到，
+        # 进而拿一条早已作废的记录去比对输出，把诚实证据判成改写。
+        scored.sort(key=lambda pair: (pair[0], pair[1]), reverse=True)
+        return [rec for _, _, rec in scored]
 
     def find_call(self, claimed_cmd: str) -> LedgerRecord | None:
         found = self.candidates(claimed_cmd)
@@ -462,9 +511,15 @@ class Ledger:
         long_segs = [s for s in segs if len(s) >= 6]
         if long_segs:
             return all(s in real for s in long_segs)
-        # 全是短片段时退化为"数字集合是子集"
+        # 全是短片段：先要求字面包含（短片段本来就该原样出现在输出里）
+        short = [s for s in segs if s]
+        if short and all(s in real for s in short):
+            return True
+        # 再退化为数字集合子集，但至少要两个不同数字。
+        # v2 的洞：单个数字就能命中任何含该数字的记录——「错误 0」可以匹配上
+        # 任意一条输出里出现过 0 的记录，等于没有校验。
         claimed_nums = set(re.findall(r"-?\d+(?:\.\d+)?", claimed_out))
-        if claimed_nums:
+        if len(claimed_nums) >= 2:
             return claimed_nums <= set(re.findall(r"-?\d+(?:\.\d+)?", rec.output))
         return False
 
@@ -510,8 +565,14 @@ def extract_claim_output(text: str) -> str:
         tail = parts[-1]
         if len(tail.strip()) >= 2:
             return tail
-    # 「命令 exit=0，输出 X」这种写法：取「输出 / output / stdout」之后的部分
-    m = re.search(r"(?:输出|output|stdout)\s*[:：]?\s*(.+)$", text, re.IGNORECASE)
+    # 「命令 exit=0，输出 X」这种写法：取「输出 / output / stdout」之后的部分。
+    # 标签必须处在子句边界（行首 / 空白 / 标点之后），且不能被「的/地/得」引导——
+    # 否则「证据里的输出与账本记录不一致」会被当成「输出: 与账本记录不一致」截断，
+    # 反过来把一条诚实的证据判成 LEDGER-OUTPUT-MISMATCH。
+    m = re.search(
+        r"(?:^|[\s，,；;。、:：])(?<![的地得])(?:输出|output|stdout)\s*[:：]?\s*(.+)$",
+        text, re.IGNORECASE,
+    )
     if m and len(m.group(1).strip()) >= 2:
         return m.group(1)
     # 没有箭头：先把反引号壳剥掉
@@ -1167,6 +1228,15 @@ def run_check(kind: str, text: str, ledger_path: str | None) -> Result:
         res.add("error", "KIND-UNKNOWN",
                 "无法识别文件类型；用 --kind 指定 decision/report/brief/program")
         return res
+
+    # 账本在，但只能看见外层 run_code：命令字面量在源码里就算「对上」，
+    # 这不是可证伪校验，必须显式降档并告警，不能继续冒充 ledger 档。
+    if ledger.loaded and not ledger.execution_provable():
+        res.evidence_tier = "source-literal"
+        res.add("warn", "LEDGER-EXECUTION-UNPROVEN",
+                "账本里只有 run_code 记录：命令字面量出现在程序源码里即可匹配，"
+                "无法证明该命令真的被执行过。--strict 下判失败",
+                heuristic=False)
 
     body = strip_fences(text)
 

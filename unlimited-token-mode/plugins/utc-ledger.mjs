@@ -45,6 +45,64 @@ const DEFAULT_IRREVERSIBLE = [
   'format ', 'diskpart', '> /dev/sd', 'Set-ItemProperty', 'reg add', 'reg delete',
 ]
 
+/**
+ * 从一段"可能是代码、也可能是散文"的文本里剥掉不该参与关键字匹配的部分。
+ *
+ * 纯 includes() 匹配会把「描述这个误报的散文」本身记成不可逆动作——
+ * 契约书正文里写「绝不 git push」、报告表格里写「git push、rm -rf 等关键字」，
+ * 都会被记成 irreversible:true，然后计数还滚雪球（每描述一次就多一条）。
+ */
+function stripNonExecutable(text) {
+  const lines = String(text ?? '').split('\n')
+  const kept = []
+  let inBlockComment = false
+  for (const raw of lines) {
+    let line = raw
+    // /* */ 块注释
+    if (inBlockComment) {
+      const end = line.indexOf('*/')
+      if (end < 0) continue
+      line = line.slice(end + 2)
+      inBlockComment = false
+    }
+    line = line.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    const open = line.indexOf('/*')
+    if (open >= 0) { inBlockComment = true; line = line.slice(0, open) }
+    // 行注释
+    line = line.replace(/(^|\s)\/\/.*$/, ' ').replace(/^\s*#.*$/, ' ')
+    const t = line.trim()
+    if (!t) continue
+    // markdown 表格行：表格里写的是文档，不是命令
+    if (t.startsWith('|')) continue
+    // 中文散文行：含有成段 CJK 的行是叙述，不是命令行
+    const cjk = (t.match(/[\u4e00-\u9fff]/g) || []).length
+    if (cjk >= 6) continue
+    kept.push(t)
+  }
+  return kept.join('\n')
+}
+
+/** 一行里得有执行痕迹，才算"这条命令会被执行"。 */
+const EXEC_TRACE_RE = /(^|[\s;&|(])(?:await\s+)?(?:sudo\s+)?(?:bash|sh|zsh|pwsh|powershell|cmd|python3?|node|npm|pnpm|yarn|git|docker|kubectl|rm|mv|cp|del|rmdir|reg|systemctl|format|diskpart|Stop-Process|Remove-Item|Set-ItemProperty|Invoke-Expression)\b|\$\s|\bexec\b/
+
+/**
+ * 判断一次 tool call 是不是真的在做不可逆动作。
+ *
+ * 要求同时满足：关键字出现在**可执行文本**里（已剥注释 / 表格 / 散文），
+ * 且**同一行**里有执行痕迹。只满足其一的多半是文档在谈论这个关键字。
+ */
+export function detectsIrreversible(command, target, patterns) {
+  const text = stripNonExecutable(`${command}\n${target}`)
+  if (!text) return false
+  for (const line of text.split('\n')) {
+    if (!EXEC_TRACE_RE.test(line)) continue
+    for (const pat of patterns) {
+      if (line.includes(pat)) return true
+    }
+  }
+  return false
+}
+
 /** 单行化，避免把换行塞进 jsonl 以外的地方出错。 */
 function clip(value, max) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? '')
@@ -148,11 +206,7 @@ export function apply(ctx, config = {}) {
       const s = touchSession(sessionId)
       s.calls += 1
 
-      let isIrreversible = false
-      const haystack = `${command}\n${target}`
-      for (const pat of irreversible) {
-        if (haystack.includes(pat)) { isIrreversible = true; break }
-      }
+      const isIrreversible = detectsIrreversible(command, target, irreversible)
       if (isIrreversible) {
         s.irreversibleSeen += 1
         s.irreversibleUngated += 1

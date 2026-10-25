@@ -4,9 +4,13 @@
 
 > Also known as **"白饭管够模式"** (All-You-Can-Eat Rice Mode) — because the whole point is to stop the model from going into power-saving mode.
 
+**In one sentence:** long-running coding agents don't usually fail because they can't write code. They fail because they quietly mis-count, skip a check and say they didn't, or declare "done" without ever verifying. This repository adds a governance layer that makes those specific failures **visible and provable**.
+
 An external governance layer for models whose *judgment* can be trusted but whose *bookkeeping* cannot.
 
 This is not a prompt-trick collection. It is a set of **hard rules + scripts + a validator** that move the model's ledger, its self-checks, and its definition of "done" out of its thinking and into something verifiable.
+
+> **Read this first if you are new:** jump to [What it fixes](#what-it-fixes) for the five concrete failure modes, then [Usage](#usage) to install. Terms like `ledger`, `tier`, and `run_code` are defined where they first appear.
 
 ---
 
@@ -19,7 +23,7 @@ This repository ships the same seven contracts twice, because the failure mode c
 | Model sees | one tool call per step | a single `run_code` tool; every other capability is an in-program SDK binding `await tools.<name>(args)` |
 | Failure mode treated | laziness one action at a time | one big mistake inside a program |
 | Contracts | seven | the same seven, re-stated for programs |
-| Extra hazards | — | **P1–P7**: swallowed exceptions, self-certified verdicts, summaries instead of evidence, implicit ledgers, bundled irreversible actions, truncation read as completion, concurrent read-modify-write |
+| Extra hazards | — | **P1–P7** — seven ways a program goes wrong that a native-tool harness cannot produce: swallowed exceptions, self-certified verdicts, summaries instead of evidence, implicit ledgers, bundled irreversible actions, truncation read as completion, concurrent read-modify-write. Full detail in `references/ptc-hazards.md` |
 | Preset `config.id` | `unlimited-token` | `unlimited-token-ptc` |
 | Skill name | `unlimited-token-mode` | `unlimited-token-ptc` |
 
@@ -62,7 +66,19 @@ Each one = a hard rule + a trigger condition + an artifact. Violating one is a t
 6. **No manufactured scarcity** — Don't create artificial scarcity for yourself. Save by eliminating duplicate actions, never by eliminating verification.
 7. **Falsifiable finish** — Saying "done" requires **a check that could have failed but didn't**, plus its real output.
 
-Three gears keyed to **irreversibility × scale**: light (read-only, instant rollback, ≤3 steps) / standard (writes, counting) / strict (irreversible, externally visible, AIOps). When unsure, shift up a gear.
+### Three gears: how much process a task actually needs
+
+Not every task needs the full kit. Before starting, classify the task — the gear decides **which contracts you follow and what you have to leave behind**.
+
+| Gear | When it applies | Contracts you follow | Artifacts you must produce |
+|---|---|---|---|
+| **Light** | read-only, ≤3 steps, nothing irreversible | 4 (verification is free) + 7 (falsifiable finish) | none — but "done" still needs a real exit code and real output |
+| **Standard** | writes, counting, ≥4 steps | 1, 2, 3, 4, 7 | task contract + state files + run report |
+| **Strict** | irreversible, externally visible, long-running, AIOps | all seven | all of the above **plus one decision block per irreversible action** |
+
+**When unsure, go up a gear.** The cost is asymmetric: writing one extra contract costs a few minutes; skipping one consequence analysis can be permanent.
+
+The full table, with the PTC-specific triggers (how many irreversible actions sit inside one program, how many programs you'll write), is in [`unlimited-token-mode/SKILL.md`](unlimited-token-mode/SKILL.md#判档) and [`unlimited-token-ptc/SKILL.md`](unlimited-token-ptc/SKILL.md#判档开工第一步).
 
 ---
 
@@ -72,7 +88,10 @@ Three gears keyed to **irreversibility × scale**: light (read-only, instant rol
 unlimited-token-mode/                 # ← STANDARD EDITION skill
 ├── SKILL.md                          # Main skill file (seven contracts, three gears, five startup steps, banned-phrase list)
 ├── plugins/
-│   └── utc-ledger.mjs                # Runtime evidence ledger + per-step state injection (contracts 2 / 4 / 7)
+│   ├── utc-ledger.mjs                # Runtime evidence ledger + per-step state injection (contracts 2 / 4 / 7)
+│   ├── test-irreversible.mjs         # Regression: prose about a command is not that command being run
+│   ├── test-dispatch.mjs             # Regression: in-program tool calls get recorded with real exit codes
+│   └── replay-dispatch.mjs           # Replays a recorded session log and diffs the ledger against it
 ├── references/
 │   ├── evidence-map.md               # Measured numbers and sources per contract, plus disproved practices (don't copy them)
 │   ├── consequence-gate.md           # Full consequence-gate derivation template + two worked examples
@@ -86,9 +105,9 @@ unlimited-token-mode/                 # ← STANDARD EDITION skill
     ├── utc_core.py                   # The single judgement engine (byte-identical copy in the PTC edition)
     ├── unlimited_lint.py             # CLI shell -> utc_core.main
     ├── adversarial_suite.py          # 23 cases (17 attacks + 6 honest) × default/strict = 46 assertions
-    ├── ab_compare.py                 # Same cases fed to v1 and v2, verdict table
+    ├── ab_compare.py                 # Feeds the same cases to the string-only and ledger versions, prints both verdicts
     ├── e2e_verify.py                 # Replays a real session ledger against its report
-    └── selftest.py                   # Validator self-test (15 checks)
+    └── selftest.py                   # Validator self-test (17 checks, including the two plugin regressions)
 
 unlimited-token-ptc/                  # ← PTC EDITION skill
 ├── SKILL.md                          # Same seven contracts, re-stated for a run_code-only harness
@@ -106,7 +125,7 @@ unlimited-token-ptc/                  # ← PTC EDITION skill
 └── scripts/
     ├── utc_core.py                   # Byte-identical copy of the standard engine (sha256-checked by selftest)
     ├── ptc_lint.py                   # CLI shell -> utc_core.main
-    └── selftest.py                   # Validator self-test (13 checks)
+    └── selftest.py                   # Validator self-test (14 checks)
 
 preset/
 ├── cordis-preset.yml                 # Standard edition preset block
@@ -212,11 +231,11 @@ Work through the steps in order. Report the result of each step before starting 
    the result "should" be.
    a. Skill files present: count the files under each installed
       $DSH_HOME/preset-skills/<skill-name> and compare with the repo copy.
-      Standard edition: 15 files. PTC edition: 13 files.
+      Standard edition: 18 files. PTC edition: 13 files.
    b. Validator self-test, one per installed edition:
       python $DSH_HOME/preset-skills/unlimited-token-mode/scripts/selftest.py
       python $DSH_HOME/preset-skills/unlimited-token-ptc/scripts/selftest.py
-      Expected: 15/15 and 13/13. Each prints its own case count and a pass/fail
+      Expected: 17/17 and 14/14. Each prints its own case count and a pass/fail
       summary. Paste both. A failure here is not "probably fine" - stop.
    c. Top-level entry count of cordis.patch.yml: count before the install and after.
       It should increase by exactly the number of editions you installed. Zero-dependency check:
@@ -231,8 +250,8 @@ Work through the steps in order. Report the result of each step before starting 
       Expected: entries = (the count from step c), and exactly one line per installed
       edition - if any line appears twice, an old hand-copied block is still there and
       the registry will reject the whole preset with "Duplicate agent preset":
-      unlimited-token / 无限token标准版 / order 5 / 21 plugins / presentation native
-      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 22 plugins / presentation ptc
+      unlimited-token / 无限token标准版 / order 5 / 32 plugins / presentation native
+      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 33 plugins / presentation ptc
       Warnings about unresolved !!js tags are expected and harmless.
    e. PTC only: confirm the host can actually compose PTC. The PTC preset needs
       ctx.ptcRuntime, which @deepseek-ai/dsh-ptc-runtime-node provides. Check that
@@ -268,21 +287,24 @@ python unlimited-token-ptc/scripts/ptc_lint.py <artifact> --kind brief|decision|
 # with the runtime ledger: upgrades shape-checking into falsifiable checking
 python unlimited-token-mode/scripts/unlimited_lint.py report.md --kind report --ledger .utc/ledger.jsonl
 
-# self-tests
-python unlimited-token-mode/scripts/selftest.py    # 15 checks
-python unlimited-token-ptc/scripts/selftest.py     # 13 checks
+# self-tests (both print their own case count and a pass/fail summary)
+python unlimited-token-mode/scripts/selftest.py    # 17 checks
+python unlimited-token-ptc/scripts/selftest.py     # 14 checks
 ```
 
 Exit codes: `0` pass / `1` judgement failed / `2` bad input or usage. A crash is never a valid outcome.
 
 #### Evidence tiers — not all checks are equal
 
+Every run prints which tier it used. **A higher tier is a stronger guarantee; the tool always tells you which one you got.**
+
 | Tier | When | What it proves | What it cannot prove |
 |---|---|---|---|
-| `ledger` | `--ledger` given | the command really ran, the output was not rewritten, the exit code matches | — |
-| `shape-only` | no ledger | the artifact has commands, has shaped output, and contains no pure-declaration check | **nothing about whether any of it actually ran** |
+| `ledger` | `--ledger` given, and the ledger contains a record of a real tool execution | the command really ran, the output was not rewritten, the exit code matches | — |
+| `source-literal` | `--ledger` given, but the ledger only holds coarse program-level records | the command **text appears in what was submitted** | **that the command was ever executed** |
+| `shape-only` | no ledger at all | the artifact has commands, has shaped output, and contains no pure-declaration check | **nothing about whether any of it actually ran** |
 
-The CLI prints the tier it used. `shape-only` is a weaker guarantee and says so.
+`source-literal` exists because of one specific limitation: when a harness runs a whole program as a single tool call, a coarse ledger can only record the program source and the program's return value. Text appearing in that source is not evidence of execution. The validator detects this case, says so, and downgrades — under `--strict` it fails outright.
 
 #### How the ledger makes evidence falsifiable
 
@@ -292,31 +314,38 @@ The CLI prints the tier it used. `shape-only` is a weaker guarantee and says so.
 - output rewritten → `LEDGER-OUTPUT-MISMATCH`
 - exit code fabricated → `LEDGER-EXIT-MISMATCH`
 
-This is what closes the hole that v1 could not close: in v1 the "real output" cell was written by the model, so "copy the field descriptions, then write *I confirmed it*" passed. String heuristics cannot tell a real check from a well-copied fake. Runtime records can.
+**Why this matters:** if the "real output" cell is written by the model, then "copy the field descriptions, then add *I confirmed it*" passes. String comparison cannot tell a real check from a well-copied fake. Runtime records can. The next section shows how big that difference is.
 
 The same plugin also injects per-step state (call count, error count, irreversible-action count) — that is contract 2, implemented by the runtime instead of demanded of the model.
 
-#### v1 vs v2 on the same 23 cases
+#### Why the ledger matters: a before/after comparison
+
+The first version of this validator (**v1**) had no ledger at all — it only compared strings. You can still run it to see the difference. The same 23 test artifacts were fed to both versions:
 
 | | correct | let through | false-alarm | crashed |
 |---|---|---|---|---|
-| v1 | 8 | 14 | 1 | 0 |
-| v2 | 23 | 0 | 0 | 0 |
+| v1 (strings only) | 8 | 14 | 1 | 0 |
+| v2 (runtime ledger) | 23 | 0 | 0 | 0 |
 
-Reproduce with `python unlimited-token-mode/scripts/ab_compare.py <v1 scripts dir>`. The 23 cases are 17 attacks plus **6 honest artifacts** — the honest half matters, because a validator that only catches bad guys can be written to always say no, and v1's false alarm was a genuine `df -h` check rejected as fake.
+Reproduce with `python unlimited-token-mode/scripts/ab_compare.py <v1 scripts dir>`.
+
+**What the numbers mean.** 14 of 23 bad artifacts slipped past v1: it could not tell a real check from a well-copied fake, because in v1 the "real output" cell was written by the model itself.
+
+The **6 honest artifacts** in that set are the more important half. A validator that only catches bad guys is trivial to write — just always say no. v1 also produced one **false alarm**: a legitimate `df -h` disk check was rejected as fake, because the validator was matching on word similarity and the model had paraphrased the command. That single false alarm is the reason for the rule below.
 
 ---
 
 ## Boundaries
 
-- For read-only, one-off small tasks the full kit is waste — use the light gear.
-- If the **framework itself** already enforces counting and verification (harness injection), contracts 2 and 4 reduce to "confirm the injection exists".
+- For read-only, one-off small tasks the full kit is waste — use the **light gear** (contracts 4 and 7 only). See [Three gears](#three-gears-how-much-process-a-task-actually-needs) for what each gear drops.
+- If the **framework itself** already enforces counting and verification (for example, the runtime injects state into every step), then two of the seven contracts — *externalize state* and *verification is free* — reduce to "confirm the injection actually exists". The other five still apply.
 - This mode treats **process defects**, not capability limits. It stops the model from making known mistakes; it does not make it smarter.
 - **`shape-only` proves nothing about execution.** Without the ledger plugin the validator can only check shape. It says so on every run.
 - **It validates the record, not the intent.** A model determined to fool it can run an unrelated command and paste that command's real output. That hole is structural, and this mode does not pretend to close it.
-- **Heuristics never fail an artifact.** Token-similarity signals are advisory only — the v1 false alarm came from treating them as verdicts.
+- **Word-similarity heuristics never fail an artifact.** They are advisory only, for one concrete reason: a model that legitimately paraphrases a command (`df -h` written as "check disk usage") looks *different* from the recorded command, so any rule that treats "different wording" as "fabricated" will reject honest work. Similarity can raise a flag; it cannot pass sentence. Hard verdicts come only from the runtime ledger, which records what actually ran.
 - The PTC edition assumes a `run_code`-only harness. On a native-tool harness it is the wrong edition — its rules describe machinery that is not there.
 - The PTC edition cannot fix what the runtime hides: if a program is killed by `timeoutMs`, nothing it computed reaches the conversation. The countermeasure is structural (segment your work, write progress to disk as you go), not rhetorical.
+- **In-program tool calls are recorded when the harness emits `tool/ptc-dispatch` events** (current DSH does). The ledger then holds the *real* command, the *real* tool name, and the *real* exit code with `scope: "inner"`, which is what makes the `ledger` tier reachable under PTC. On older harnesses without those events the tier degrades to `source-literal` and says so. Cost: the ledger grows to roughly 3× its previous row count (measured: 158 outer calls produced 491 inner records in one session).
 
 ---
 
@@ -324,7 +353,7 @@ Reproduce with `python unlimited-token-mode/scripts/ab_compare.py <v1 scripts di
 
 The problem list and measured data come from `AGENT-CAPABILITY-REPORT.md` in [karminski/deepseek-v4.1-flash-1017-issue-pov](https://github.com/karminski/deepseek-v4.1-flash-1017-issue-pov), plus the author's usage notes.
 
-The author's one-line summary: **it writes code just fine, but using it for AIOps requires keeping your wits about you.**
+The author's recommendation, summarised: **it writes code just fine, but using it for AIOps requires keeping your wits about you.**
 
 ---
 
@@ -334,9 +363,13 @@ The author's one-line summary: **it writes code just fine, but using it for AIOp
 
 > 又名 **白饭管够模式**。
 
+**一句话：** 长流程的编程 Agent 一般不是败在不会写代码，而是败在三件小事上——悄悄数错、跳过了核对却说没跳过、没验证就宣布"做完了"。这个仓库加的那一层，专门让这三类失败**看得见、可证伪**。
+
 给「判断力可信、账本不可信」的模型加装一层外置治理。
 
 不是提示词技巧合集，是一套**硬规则 + 脚本 + 校验器**：把模型的账本、核对、收工判据，从 thinking 里搬到外面。
+
+> **第一次来先看这两节：** [这个模式治什么](#这个模式治什么)讲五个具体失效场景，[用法](#用法)讲怎么装。文中 `账本`、`证据档`、`run_code` 这类词在首次出现处都有解释。
 
 ---
 
@@ -349,7 +382,7 @@ The author's one-line summary: **it writes code just fine, but using it for AIOp
 | 模型看到什么 | 每步一次工具调用 | 只有一个 `run_code`，其余能力都是程序内 SDK 绑定 `await tools.<名字>(参数)` |
 | 治的失效方式 | 一次一次地犯懒 | 在程序里一次性犯错 |
 | 契约 | 七条 | 同样七条，按程序口径重述 |
-| 额外缺陷 | — | **P1–P7**：吞异常、自证判决、摘要代替证据、隐式账本、捆绑不可逆、截断即完成、并发读改写 |
+| 额外缺陷 | — | **P1–P7**（Programmatic Tool Calling 下独有的七种翻车方式）：吞异常、自证判决、摘要代替证据、隐式账本、捆绑不可逆、截断即完成、并发读改写。详见 `references/ptc-hazards.md` |
 | 预设 `config.id` | `unlimited-token` | `unlimited-token-ptc` |
 | 技能名 | `unlimited-token-mode` | `unlimited-token-ptc` |
 
@@ -395,7 +428,19 @@ PTC 版之所以存在，是因为标准版那七条契约搬到 `run_code` 下*
 6. **预算不设限** —— 不给自己制造稀缺。要省就省重复动作，不省核对。
 7. **可证伪收工** —— 说「做完了」必须附带**一个本来可以失败、但没有失败的检验**，以及它的真实输出。
 
-按 **不可逆性 × 规模** 分三档：轻（只读、秒回滚、≤3 步）/ 标准（有写入、有计数）/ 严格（不可逆、外部可见、AIOps）。拿不准就上一档。
+### 三档：一份任务到底需要多少流程
+
+不是每个任务都要全套。开工前先给任务判档——**档位决定你守哪几条契约、要留哪些档**。
+
+| 档位 | 什么时候用 | 守哪些契约 | 必须留什么 |
+|---|---|---|---|
+| **轻** | 只读、≤3 步、没有不可逆动作 | 4（核对免费）+ 7（可证伪收工） | 什么都不用写——但"做完了"仍要给真实退出码和真实输出 |
+| **标准** | 有写入、有计数、≥4 步 | 1、2、3、4、7 | 任务契约书 + 状态文件 + 运行报告 |
+| **严格** | 不可逆、外部可见、长流程、AIOps | 全部七条 | 上面全部，**外加每个不可逆动作一块决策** |
+
+**拿不准就上一档。** 代价不对称：多写一份契约书花几分钟；漏掉一次后果推演可能是永久性的。
+
+完整判档表（含 PTC 特有的触发条件：一段程序里有几个不可逆动作、这次要写几段程序）见 [`unlimited-token-mode/SKILL.md`](unlimited-token-mode/SKILL.md#判档) 与 [`unlimited-token-ptc/SKILL.md`](unlimited-token-ptc/SKILL.md#判档开工第一步)。
 
 ---
 
@@ -405,7 +450,10 @@ PTC 版之所以存在，是因为标准版那七条契约搬到 `run_code` 下*
 unlimited-token-mode/                 # ← 无限token标准版技能
 ├── SKILL.md                          # 技能主文件（七条契约、三档齿轮、开工五步、禁用清单）
 ├── plugins/
-│   └── utc-ledger.mjs                # 运行时证据账本 + 每步状态注入（契约 2 / 4 / 7）
+│   ├── utc-ledger.mjs                # 运行时证据账本 + 每步状态注入（契约 2 / 4 / 7）
+│   ├── test-irreversible.mjs         # 回归：文字里提到某命令 ≠ 真的执行了它
+│   ├── test-dispatch.mjs             # 回归：程序内的工具调用要带上真实退出码落账
+│   └── replay-dispatch.mjs           # 回放真实录制的会话日志，与账本逐条比对
 ├── references/
 │   ├── evidence-map.md               # 七条契约的实测数字、出处，以及已被证伪的错误做法
 │   ├── consequence-gate.md           # 后果门完整推演模板 + 两个 worked example
@@ -419,9 +467,9 @@ unlimited-token-mode/                 # ← 无限token标准版技能
     ├── utc_core.py                   # 唯一判定引擎（PTC 版有逐字节相同的拷贝）
     ├── unlimited_lint.py             # CLI 外壳 -> utc_core.main
     ├── adversarial_suite.py          # 23 例（17 攻击 + 6 诚实）× 默认/严格 = 46 条断言
-    ├── ab_compare.py                 # 同一批用例喂 v1 与 v2，出判定对照表
+    ├── ab_compare.py                 # 同一批用例分别喂给纯字符串版与账本版，出对照表
     ├── e2e_verify.py                 # 把真实会话的账本与报告对账
-    └── selftest.py                   # 校验器自测（15 项）
+    └── selftest.py                   # 校验器自测（17 项，含两个插件回归）
 
 unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 ├── SKILL.md                          # 同样七条契约，按 run_code 口径重述
@@ -439,7 +487,7 @@ unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 └── scripts/
     ├── utc_core.py                   # 与标准版逐字节相同的引擎（selftest 校验 sha256）
     ├── ptc_lint.py                   # CLI 外壳 -> utc_core.main
-    └── selftest.py                   # 校验器自测（13 项）
+    └── selftest.py                   # 校验器自测（14 项）
 
 preset/
 ├── cordis-preset.yml                 # 标准版预设块
@@ -454,7 +502,10 @@ sync_prefix.py                        # 把 prompt-prefix*.md 投影进预设的
 另附：
 
 - `preset/cordis-preset.yml` —— 无限token标准版的 DeepSeek Harness Agent 预设配置块（可直接 insert 进 `cordis.patch.yml`）。
-- `preset/cordis-preset-ptc.yml` —— PTC 版预设块。与标准版块**只有三处结构差异**：id 组（`preset-unlimited-token-ptc` / `unlimited-token-ptc` / order 6）、`workflow-ptc` 与 `tool-workflow` 置 `disabled: true`、新增 `tool-presentation: { mode: ptc }`。
+- `preset/cordis-preset-ptc.yml` —— PTC 版预设块。与标准版块**只有三处结构差异**：
+  1. id 组换成 `preset-unlimited-token-ptc` / `unlimited-token-ptc` / order 6；
+  2. 关掉 `workflow-ptc` 与 `tool-workflow`（PTC 下模型只有一个 `run_code`，那套分步工作流工具没有对应机制）；
+  3. 加 `tool-presentation: { mode: ptc }` —— 这一项决定了模型到底看到"一堆原生工具"还是"一个 `run_code`"，是整份配置里最关键的一行。
 - `preset/prompt-prefix.md` —— 标准版那段常驻治理前缀全文，供非 DSH 环境直接当系统提示词用。
 - `preset/prompt-prefix-ptc.md` —— PTC 版常驻前缀全文。
 
@@ -536,7 +587,7 @@ python install.py --profile <你的 profile> --dry-run
 
 5. 验证。每一项都要真跑，把真实输出贴出来，不要描述「应该」是什么结果。
    a. 技能文件齐不齐：数一下每个已装目录 $DSH_HOME/preset-skills/<技能名> 下的文件数，
-      和仓库里那个目录比对。标准版 10 个文件，PTC 版 12 个文件。
+      和仓库里那个目录比对。标准版 18 个文件，PTC 版 13 个文件。
    b. 校验器自测，每个已装版本各跑一次：
       python $DSH_HOME/preset-skills/unlimited-token-mode/scripts/selftest.py
       python $DSH_HOME/preset-skills/unlimited-token-ptc/scripts/selftest.py
@@ -552,8 +603,8 @@ python install.py --profile <你的 profile> --dry-run
       先找到那个目录（就是包含 node_modules/@deepseek-ai/dsh-agent-preset 的那个），然后跑：
       NODE_PATH="<dsh安装目录>/node_modules" node -e "const yaml=require('yaml'),fs=require('fs'); const d=yaml.parse(fs.readFileSync(process.argv[1],'utf8')); const ps=d.filter(e=>e.insert).flatMap(e=>e.insert).filter(e=>String(e.id).startsWith('preset-unlimited-token')); console.log('条目数:',d.length); for (const p of ps) console.log('预设:', p.config.id+' / '+p.config.name+' / order '+p.config.order+' / '+p.config.plugins.length+' 个插件 / 呈现 '+(p.config.plugins.find(x=>x.id==='tool-presentation')?.config.mode ?? 'native'));" <cordis.patch.yml 的路径>
       预期：条目数 = 步骤 c 数出来的那个数，并且每个已装版本一行 ——
-      unlimited-token / 无限token标准版 / order 5 / 20 个插件 / 呈现 native
-      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 21 个插件 / 呈现 ptc
+      unlimited-token / 无限token标准版 / order 5 / 32 个插件 / 呈现 native
+      unlimited-token-ptc / 无限tokenPTC版 / order 6 / 33 个插件 / 呈现 ptc
       出现 !!js 标签未解析的 warning 是正常的，不用管。
    e. 只对 PTC 版：确认宿主真的能组合出 PTC。PTC 预设需要 ctx.ptcRuntime，
       由 @deepseek-ai/dsh-ptc-runtime-node 提供。检查 DSH 安装目录下是否存在
@@ -594,18 +645,35 @@ python scripts/ptc_lint.py <产物> --strict     # 追加 description 词数、�
 
 PTC 校验器多出第四类产物 `program`：程序账本（`templates/program-log.md`），每个 `run_code` 程序一条。它会拒绝这样的 `判决: pass`——没有 `exit=` 行、没有数字证据、或者「可失败性」栏写的是占位词。因为程序对自己算出的判决不是检验。
 
+**改前 / 改后的实测对照。** 校验器的第一版（**v1**）完全没有账本，只比对字符串。同一批 23 个测试产物分别喂给两版：
+
+| | 判对 | 放过 | 误杀 | 崩溃 |
+|---|---|---|---|---|
+| v1（纯字符串） | 8 | 14 | 1 | 0 |
+| v2（运行时账本） | 23 | 0 | 0 | 0 |
+
+14 个坏产物被 v1 放过了——因为那一版里"真实输出"这一栏是模型自己写的，它分不出真核对和抄得很像的假核对。复现：`python unlimited-token-mode/scripts/ab_compare.py <v1 脚本目录>`。
+
+那 23 个用例里有 **6 个是诚实产物**，这一半更重要：只抓坏人的校验器很好写——永远说 no 就行。v1 还**误杀过 1 个**：一次真实的 `df -h` 磁盘检查被判成了假核对，原因是那一版按词元相似度定罪，而模型把命令换了个说法。那一次误杀就是下面这条规则的由来。
+
+**为什么非要一个外部账本？** 因为校验器和被校验的东西如果出自同一个来源，规则写得再细也没用。只要"真实输出"这一栏是模型自己填的，它就能先抄一遍字段说明、再写一句"我确认过了"，然后通过。字符串比对分不出「真核对」和「抄得很像的假核对」。运行时账本可以：命令没执行过就是 `LEDGER-NO-CALL`，输出被改写就是 `LEDGER-OUTPUT-MISMATCH`，退出码编造就是 `LEDGER-EXIT-MISMATCH`。而那个文件模型写不了。
+
 ---
 
 ## 适用边界
 
-- 只读、一次性的小任务上全套是浪费——用轻档。
-- 如果**框架本身**已经强制了计数和核对（harness 注入），契约 2/4 只保留「确认注入存在」。
+- 只读、一次性的小任务上全套是浪费——用**轻档**（只守契约 4 与 7）。各档丢掉了什么，见 [三档](#三档一份任务到底需要多少流程)。
+- 如果**框架本身**已经强制了计数和核对（比如运行时每步都会注入状态），那七条契约里有两条——*状态外置*和*核对免费*——就退化成「确认注入真的存在」。其余五条照旧。
 - 这个模式治的是**流程缺陷**，不治能力上限。它让模型不犯已知的错，不会让它变聪明。
-- **`shape-only` 档证明不了执行过。** 没装账本插件时校验器只能看形态，而且每次运行都会明说。
+- **证据档不是同一回事，每次运行都会打印这次用的是哪一档。** 档越高，能证明的越多：
+  `ledger` 档（装了账本插件、且账本里有真实工具执行记录）= 能证明命令真的跑过、输出没被改写、退出码对得上；
+  `source-literal` 档（装了插件，但账本只有程序级的粗记录）= 只能证明「这段命令文字出现在提交内容里」，**证明不了它被执行过**，`--strict` 下直接判失败；
+  `shape-only` 档（没装插件）= 只能看形态，证明不了任何执行。
 - **它校验的是留档，不是意图。** 一个铁了心要骗过它的模型，可以先跑一条无关命令，再把那条命令的真实输出贴进来。这个洞是结构性的，本模式不假装能堵。
-- **启发式永不判失败。** 词元相似度这类信号只作提示——v1 的误杀正是把提示当成了判决。
+- **词元相似度永不判失败。** 这类信号只作提示，原因很具体：一个诚实的模型会把命令换个说法（`df -h` 写成"看一下磁盘占用"），于是它的措辞和账本里记的命令**长得不一样**。任何把"措辞不同"当成"编造"的规则，都会误伤这种诚实行为。相似度可以报警，不能定罪；定罪只能靠运行时账本——它记的是真的跑过什么。
 - PTC 版假设宿主只给一个 `run_code`。在原生工具调用的宿主上，它是错的版本——它的规则描述的是并不存在的机制。
 - PTC 版治不了运行时藏起来的东西：程序被 `timeoutMs` 杀掉时，它算出的任何结果都进不了对话。对策是结构性的（分段提交、边跑边落盘），不是措辞性的。
+- **程序内的工具调用会落账，前提是框架发出 `tool/ptc-dispatch` 事件**（当前 DSH 会发）。落账时带 `scope: "inner"`，记的是**真实命令、真实工具名、真实退出码**——这才让 PTC 下也能到 `ledger` 档。老版本框架不发这些事件时会降级为 `source-literal` 档并明说。代价：账本行数约为原来的 3 倍（实测一个会话里 158 次外层调用产生了 491 条内层记录）。
 
 ---
 
@@ -613,4 +681,4 @@ PTC 校验器多出第四类产物 `program`：程序账本（`templates/program
 
 针对的问题清单与实测数据来自 [karminski/deepseek-v4.1-flash-1017-issue-pov](https://github.com/karminski/deepseek-v4.1-flash-1017-issue-pov) 的 `AGENT-CAPABILITY-REPORT.md`，以及作者的使用建议。
 
-一句话总结作者的原话：**用它写代码没毛病，但用它做 AIOps 需要长个心眼。**
+总结作者的建议：**用它写代码没毛病，但用它做 AIOps 需要长个心眼。**

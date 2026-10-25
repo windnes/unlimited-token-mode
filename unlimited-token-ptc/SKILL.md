@@ -170,11 +170,14 @@ python scripts/ptc_lint.py <file> --kind brief|decision|report|program
 
 ```yaml
 - id: utc-ledger
-  name: '<绝对路径>/unlimited-token-mode/plugins/utc-ledger.mjs'
+  name: 'file:///C:/path/to/unlimited-token-mode/plugins/utc-ledger.mjs'
   config:
     ledgerPath: .utc/ledger.jsonl
     injectState: true
 ```
+
+路径必须是 `file://` URL，不能是裸的 Windows 绝对路径 `C:\...`——否则 loader 抛
+`ERR_UNSUPPORTED_ESM_URL_SCHEME`，预设整条变「加载失败」不进下拉框。
 
 两个模式共用同一个插件文件（证据账本与运行时状态注入与模式无关）。
 

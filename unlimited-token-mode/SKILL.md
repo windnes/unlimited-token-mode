@@ -220,11 +220,15 @@ CLI 会打印当前档位。**看到 `shape-only` 就不要宣称证据已被验
 
 ```yaml
 - id: utc-ledger
-  name: '<绝对路径>/unlimited-token-mode/plugins/utc-ledger.mjs'
+  name: 'file:///C:/path/to/unlimited-token-mode/plugins/utc-ledger.mjs'
   config:
     ledgerPath: .utc/ledger.jsonl
     injectState: true
 ```
+
+路径必须是 `file://` URL，**不能是裸的 Windows 绝对路径**：cordis loader 对不以 `.`
+开头的 `name` 直接 `import(name)`，Node 的 ESM loader 只认 `file:`/`data:`/`node:`，
+写 `C:\...` 会抛 `ERR_UNSUPPORTED_ESM_URL_SCHEME`，预设变成「加载失败」被 UI 隐藏。
 
 插件做两件事：
 

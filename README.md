@@ -483,7 +483,7 @@ python install.py --profile <你的 profile> --dry-run
 安装器比手工复制多做四件事：
 
 1. **整段复制预设块**，不手动裁剪。预设之间没有继承机制，裁一刀就少一批工具。
-2. **把插件路径写成绝对路径**。DSH 里的相对路径按「谁加载它」解析——顶层 `--patch` 按 patch 文件自己所在的目录算，块一挪走相对路径就静默失效。这是账本插件「装上了但没跑」最常见的原因。
+2. **把插件路径写成 `file://` 绝对 URL**。DSH 里的相对路径按「谁加载它」解析——顶层 `--patch` 按 patch 文件自己所在的目录算，块一挪走相对路径就静默失效。但改成裸的 Windows 绝对路径 `C:\...` 也不行：cordis loader 对不以 `.` 开头的 `name` 直接走 `import(name)`，而 Node 的 ESM loader 只接受 `file:`/`data:`/`node:` 三种 scheme，会抛 `ERR_UNSUPPORTED_ESM_URL_SCHEME`。结果是**预设整条变成加载失败、被 UI 过滤掉，下拉框里根本不出现**——这是账本插件「装上了但没跑」最常见的原因。
 3. **写入前先删同名条目**。如果你以前手工拷过同一份预设块，registry 会抛 `Duplicate agent preset`，**整个预设加载失败**。安装器会先清掉同 id 的旧块。
 4. **改前备份** `cordis.patch.yml`（带时间戳）。
 

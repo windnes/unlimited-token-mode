@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import pathlib
 import re
 import shutil
 import sys
@@ -63,15 +64,26 @@ def write(path: str, text: str) -> None:
         fh.write(text)
 
 
-def preset_text(mark: str, plugin_abs: str) -> str:
-    """读取仓库里的预设文件，把插件路径换成绝对路径。"""
+def to_file_url(path: str) -> str:
+    """把本地绝对路径转成 file:// URL。
+
+    preset 里不能写裸的 Windows 绝对路径 `C:\\...`：cordis loader 对不以 `.`
+    开头的 name 直接走 `import(name)`，而 Node 的 ESM loader 只接受
+    file:/data:/node: 三种 scheme，会抛 ERR_UNSUPPORTED_ESM_URL_SCHEME。
+    表现是插件静默不加载、预设整条变成「加载失败」而不进下拉框。
+    """
+    return pathlib.Path(path).resolve().as_uri()
+
+
+def preset_text(mark: str, plugin_url: str) -> str:
+    """读取仓库里的预设文件，把插件路径换成绝对 file:// URL。"""
     src = os.path.join(PRESET_DIR, PRESET_FILES[mark])
     if not os.path.exists(src):
         raise SystemExit(f"找不到预设文件: {src}")
     text = read(src)
     replaced, n = re.subn(
         r"^(\s*)name:\s*'\.\./unlimited-token-mode/plugins/utc-ledger\.mjs'\s*$",
-        lambda m: m.group(1) + "name: '" + plugin_abs + "'",
+        lambda m: m.group(1) + "name: '" + plugin_url + "'",
         text,
         flags=re.MULTILINE,
     )
@@ -164,7 +176,7 @@ def main() -> int:
 
     chunks: list[str] = [GEN_BEGIN, ""]
     for mark in wanted:
-        chunks.append(preset_text(mark, PLUGIN))
+        chunks.append(preset_text(mark, to_file_url(PLUGIN)))
         chunks.append("")
     chunks.append(GEN_END)
 
@@ -172,7 +184,7 @@ def main() -> int:
 
     if args.dry_run:
         print(f"profile : {patch_path}")
-        print(f"插件    : {PLUGIN}")
+        print(f"插件    : {to_file_url(PLUGIN)}")
         print(f"将写入  : {', '.join(wanted)}")
         if removed:
             print("（会先删掉旧的同名条目与旧生成区块）")
@@ -189,7 +201,7 @@ def main() -> int:
 
     print(f"已安装到 {patch_path}")
     print(f"备份    : {backup}")
-    print(f"插件    : {PLUGIN}")
+    print(f"插件    : {to_file_url(PLUGIN)}")
     print("")
     print("下一步：")
     print("  1. 重启 DSH（预设清单在启动时组装，不重启看不到新条目）")

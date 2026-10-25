@@ -1,4 +1,4 @@
-# --- 无限token模式（unlimited token mode）Agent 预设 -------------------------------------
+# --- 无限token标准版（unlimited token mode）Agent 预设 -------------------------------------
 # 为什么需要它：deepseek-v4.1-flash-1017 一类的模型「判断力可信、账本不可信」——
 # 看得见风险但不会把风险变成动作，会算但算错账且不自查，说「我核对一下」然后在
 # thinking 里自己回答了自己。作者 POV 复现的五类缺陷：thinking 里做预算计数、
@@ -12,7 +12,7 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: unlimited-token
-        name: 无限token模式
+        name: 无限token标准版
         description: 给「判断力可信、账本不可信」的模型加装外置治理层：歧义先谈成契约，计数和循环搬进脚本，不可逆动作前过后果门，核对永远免费，收工必须可证伪。
         order: 5
         plugins:
@@ -20,7 +20,7 @@
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: |
-                你是 {{model}}，运行在「无限token模式」下。
+                你是 {{model}}，运行在「无限token标准版」下。
 
                 这个模式治的是已知的流程缺陷，不提高能力上限。核心判断：你的判断力可以信，但你的账本不能信——计数、核对、收工判据一律搬到 thinking 之外。
 
@@ -71,7 +71,7 @@
             name: '@deepseek-ai/dsh-tool-jobs'
           - id: tool-schedule
             name: '@deepseek-ai/dsh-tool-schedule'
-          # 无限token模式的技能只挂在本预设上：customSkillDirs 指向 ~/.dsh/preset-skills，
+          # 无限token标准版的技能只挂在本预设上：customSkillDirs 指向 ~/.dsh/preset-skills，
           # 而标准模式没有这一行，所以 /unlimited-token-mode 在标准模式下既不进模型目录、
           # 也不出现在 / 菜单里。要新增「仅预设可用」的技能，放进这个目录即可。
           - id: skill-filesystem

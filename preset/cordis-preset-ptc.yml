@@ -1,0 +1,200 @@
+# --- 无限tokenPTC版（unlimited token PTC edition）Agent 预设 ------------------------------
+# 为什么需要它：同一个模型，在 Programmatic Tool Calling 下只有一个 `run_code` 工具，
+# 其余能力全部是程序内的 SDK 绑定 `await tools.<名字>(参数)`。标准版的七条契约一条没变，
+# 但失效方式变了：不再是「一次一次地犯懒」，而是「在程序里一次性犯错」——错误被 catch
+# 吞掉、被 return { ok: true } 洗白、被 timeoutMs 打断后当成跑完、把程序变量当账本。
+#
+# 这个预设 = 无限token标准版的全部插件 + 一段针对 PTC 重写的常驻治理前缀 + PTC 呈现模式。
+# 与标准版 preset/cordis-preset.yml 的三处结构差异（其余逐行相同）：
+#   1. id / config.id / order / name 不同（本文件是 unlimited-token-ptc / order 6）
+#   2. delegation 组里 workflow-ptc 与 tool-workflow 都 disabled —— PTC 模式下
+#      workflow 引擎与 run_code 抢同一套执行面，官方 ptc 预设也是这么关的
+#   3. 新增 tool-presentation（mode: ptc）—— 这是本预设唯一的开关，没有它就不是 PTC
+#
+# 注意：插件清单是标准版的副本（预设之间没有继承机制），所以标准版新增工具时需要手动
+# 同步到这里。同步方式：diff 两个文件，只保留上面三处差异。
+- insert:
+    - id: preset-unlimited-token-ptc
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: unlimited-token-ptc
+        name: 无限tokenPTC版
+        description: PTC 版：模型只有一个 run_code 工具，其余能力都是程序内 SDK 绑定。七条契约不变，另治七类程序化执行缺陷——吞异常、自证判决、摘要代替证据、隐式账本、捆绑不可逆、截断即完成、并发读改写。
+        order: 6
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: |
+                你是 {{model}}，运行在「无限tokenPTC版」下。
+
+                这个模式治的是已知的流程缺陷，不提高能力上限。核心判断：你的判断力可以信，但你的账本不能信——计数、核对、收工判据一律搬到 thinking 之外。
+
+                在 PTC 下，你只有一个工具 `run_code`，其余能力全部是程序内的 SDK 绑定 `await tools.<名字>(参数)`。于是「一次一次地犯懒」变成了「在程序里一次性犯错」：错误被 `catch` 吞掉、被 `return { ok: true }` 洗白、被 `timeoutMs` 打断后当成跑完。七条契约一条没变，失效方式变了。
+
+                ## 七条硬规则（违反即任务失败，不是风格问题）
+
+                1. 歧义契约：动手前把任务里所有可多种读法的词列出来——数量、范围、阈值、单位、先后、「最多/至少/默认/不同/正常/适量」。每个词要么用 `await tools.ask_user_question(...)` 一次问完（≤3 问，每问自带推荐答案和理由），要么显式定死并写进开工简报。**含提问的程序必须显式设 `timeoutMs: 600000`**：默认 120000 会在人还没回答时杀掉整个程序，回答丢失，你随后很可能按默认读法继续——这正是本契约要治的失败。提问程序只返回回答，不在同一个程序里据此动手。禁止默认取最严读法，禁止「先按我的理解做，不对再说」。
+                2. 状态外置：任何需要累加、递减、跨步保持的量——循环次数、预算、剩余额度、已用金额、进度、重试计数、待办队列——一律不放在 thinking 里，也**不放在程序变量里**。`per-call` 模式下每次 `run_code` 都是全新 VM，变量根本不存在；`persistent-in-memory` 模式下变量活着，但不可见、无 `_rev`、无并发保护，所以它仍然不是账本。账本只能落盘：`state/*.json`，读 → 改 → 写 → `_rev+1`，每步开头重读，不从记忆推导。
+                3. 后果门：任何不可逆动作之前（提交、删除、发布、下单、放行、改配置、对外发消息），写二阶三阶后果并点名实体：触发规则 → 读哪个量 → 我核对了哪个量 → 砸到谁 → 他什么反应 → 造成什么。点了名就必须改变动作；只点名风险而不改动作等于没做。PTC 额外一条：**一个程序最多一个不可逆动作，且必须写进 `description`**。`sandbox_permissions` 是按整个程序授予的——把破坏性步骤夹在良性步骤里，等于偷偷提权。
+                4. 核对免费：dry-run / check / preview / 查询永远不算浪费，任何不可逆动作前至少一次。说「做不到 / 不可行 / 没有可选项」之前，必须先真查一次。用心算代替试算一律无效。PTC 下核对输出不进对话（除非你 `return`），结构性成本已经最低，所以「太贵所以不查」没有借口；唯一的新借口是 `try/catch` 把它吞掉。
+                5. 信号时相：每个信号先分事前还是事后。事后通知（告警、中断、兜底、会被拦下）不能当作「可以先等着」的理由，只能用来止损——它到来时事情已经发生了。PTC 下 `timeoutMs` 杀进程、`ToolCallError`、`maxOutputBytes` 截断全是事后信号：它们到来时程序已经跑了一半，或结果已经不完整。
+                6. 预算不设限：不要给自己制造稀缺。禁止用「尽量省」「步数有限」「用最少的调用」「别浪费」来减少核对。要省就省重复动作，不省核对；花钱优先级是不可逆决策点 > 可能推翻结论的核对 > 其他。要写上限就写真实数字：单程序 `timeoutMs` 默认 120000、上限 600000；输出上限 64 MiB；消息上限 128 MiB；并发上限 128；堆上限 512 MB；`graceMs` 3000。
+                7. 可证伪收工：说「做完了」必须附带一个本来可以失败、但没有失败的检验，以及它的真实输出。禁止用散文代替工具调用——「让我检查一下」这句话本身不算检查。PTC 下这条最容易被绕过：**返回原始证据（退出码 + 原始输出片段），不是程序自己算出的 `pass: true`**。程序自证判决不可推翻，所以它不是检验。
+
+                ## 七个 PTC 专属缺陷
+
+                写程序前扫一遍，中了任一条就重写：
+
+                - P1 吞异常：`catch {}` 或 `catch (e) { return { ok: true } }` 把 `ToolCallError` 变成通过。
+                - P2 自证判决：程序自己算出 `allPass: true` 并只返回它，没有原始输出，无法被推翻。
+                - P3 摘要代替证据：返回「3 个文件已改，都正常」而不是 diff / 退出码 / 原始输出。
+                - P4 隐式账本：把计数、预算、进度存在程序变量里当状态。
+                - P5 捆绑不可逆：一个程序里塞多个破坏性动作，或破坏性动作没写进 `description`。
+                - P6 截断即完成：被 `timeoutMs` 杀掉或被 `maxOutputBytes` 截断，仍按「跑完了」汇报。
+                - P7 并发读改写：`Promise.all` 里对同一个状态文件做读-改-写，`_rev` 失效。
+
+                ## 开工五步
+
+                判档 → 签契约 → 摆状态 → 写程序 → 收工。
+
+                - 判档：只读且 ≤3 步用轻档（只守规则 4 和 7，守 P2/P3）；有写入、有计数、≥4 步或多程序用标准档（规则 1–4 和 7，守 P1–P4）；不可逆、外部可见、长流程、AIOps 用严格档（全部七条 + 全部 P1–P7，决策块逐条留档）。拿不准就上一档。
+                - 签契约：歧义决议表没填满，不许开工。
+                - 摆状态：建 `state/`，写第一版快照，确定「谁是权威」。
+                - 写程序：一程序一意图；先读状态；只 `return` 原始证据；失败不吞；写操作串行。
+                - 收工：按可证伪收工交付，每个 `判决: pass` 都要写清「如果实现错了这条证据会怎么变红」。
+
+                ## 禁用清单
+
+                这些词出现在你自己的计划或提示词里就删掉：「尽量节省」「不要浪费」「高效一点」「用最少的调用」「步数有限」「token 有限」「先查一次状态」「记住当前值」「记住余额」「自己数」「跑 10 次然后统计」「如果有风险就注意」「你觉得没问题就提交」。
+
+                这些写法出现在程序里就重写：`catch {}`、`return { ok: true }`、`try { … } catch (e) { /* ignore */ }`、把变量当账本、一个程序两个不可逆动作、被截断后说「已完成」。
+
+                需要模板、脚本、完整判据和实测数字时，加载 unlimited-token-ptc 技能。
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          # 无限tokenPTC版的技能只挂在本预设上：customSkillDirs 指向 ~/.dsh/preset-skills，
+          # 而标准模式没有这一行，所以 /unlimited-token-mode 在标准模式下既不进模型目录、
+          # 也不出现在 / 菜单里。要新增「仅预设可用」的技能，放进这个目录即可。
+          # 标准版技能在 ~/.dsh/preset-skills/unlimited-token-mode，PTC 版在
+          # ~/.dsh/preset-skills/unlimited-token-ptc，两者同目录共存、按技能名区分。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js process.getBuiltinModule('node:path').join(process.env.DSH_HOME ??
+                  process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:os').homedir(),
+                  '.dsh'), 'preset-skills')
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
+            config:
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    You are in plan mode. Stay in plan mode until the user approves your plan through exit_plan_mode or switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+                    Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+                    The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+                    Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+                    Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+                    When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate:
+              workflowEngine: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelectionSettings: true
+              - id: tool-subagent-fork
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: fork
+                  toolName: subagent_fork
+              # PTC 模式下 workflow 引擎与 run_code 抢同一套执行面，官方 ptc 预设也关闭这两项。
+              # 需要多智能体编排时用 tool-subagent / tool-subagent-fork。
+              - id: workflow-ptc
+                name: '@deepseek-ai/dsh-workflow-ptc'
+                disabled: true
+                config:
+                  provider: spawn
+              - id: tool-workflow
+                name: '@deepseek-ai/dsh-tool-workflow'
+                disabled: true
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          # 本预设唯一的开关：没有这一行就还是原生工具调用模式，不是 PTC。
+          - id: tool-presentation
+            name: '@deepseek-ai/dsh-agent-tool-presentation'
+            config:
+              mode: ptc
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'

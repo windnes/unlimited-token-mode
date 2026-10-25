@@ -1,10 +1,10 @@
 ---
 name: unlimited-token-mode
-description: 无限token模式。给「判断力可信、账本不可信」的模型（deepseek-v4.1-flash-1017 一类）加装外置治理层：开工前把歧义谈成契约，把计数/配额/循环搬进脚本，不可逆动作前过后果门，核对永远免费，区分事前与事后信号，不制造预算稀缺，收工必须可证伪。多步执行、长流程监控、有配额或预算、要下「完成」结论时加载。
+description: 无限token标准版。给「判断力可信、账本不可信」的模型（deepseek-v4.1-flash-1017 一类）加装外置治理层：开工前把歧义谈成契约，把计数/配额/循环搬进脚本，不可逆动作前过后果门，核对永远免费，区分事前与事后信号，不制造预算稀缺，收工必须可证伪。多步执行、长流程监控、有配额或预算、要下「完成」结论时加载。
 whenToUse: 任务超过 3 步、涉及不可逆动作、含跨步计数或配额、需要长时间监控、或需要给出「做完了」的结论时。
 ---
 
-# 无限token模式
+# 无限token标准版
 
 ## 诊断
 
@@ -133,7 +133,7 @@ whenToUse: 任务超过 3 步、涉及不可逆动作、含跨步计数或配额
 
 - `references/evidence-map.md` —— 七条契约各自的实测数字、出处，以及**已被证伪的错误做法**（别照着做）。
 - `references/consequence-gate.md` —— 后果门的完整推演模板与两个 worked example。
-- `references/prompt-compiler.md` —— 把任意需求编译成「无限token模式提示词」的步骤。
+- `references/prompt-compiler.md` —— 把任意需求编译成「无限token标准版提示词」的步骤。
 - `references/harness-patterns.md` —— 循环外置、状态文件、环境注入的具体代码范式。
 - `templates/` —— task-brief / decision-log / run-report。
 - `scripts/unlimited_lint.py` —— 产物校验器；`python scripts/selftest.py` 自测。

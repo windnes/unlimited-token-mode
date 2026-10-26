@@ -395,12 +395,18 @@ class LedgerRecord:
     # 其它/缺省 = 外层调用。内层记录的命令与退出码来自真实执行，
     # 外层 run_code 记录的命令是整段程序源码、exit 是整段程序的退出码。
     scope: str = "outer"
+    # 这条记录属于哪个会话。账本是按装机目录落盘的单一文件，
+    # 同机的多个会话会写进同一份；不区分就会让 A 会话的调用证明 B 会话的核对。
+    session: str = ""
 
 
 class Ledger:
-    def __init__(self, path: str | None):
+    def __init__(self, path: str | None, session: str | None = None):
         self.path = path
+        self.session_filter = session
         self.records: list[LedgerRecord] = []
+        # 过滤前统计到的全部会话，用于判断"账本是否混合了多个会话"。
+        self.all_sessions: set[str] = set()
         self.loaded = False
         if path:
             self._load(path)
@@ -419,6 +425,13 @@ class Ledger:
                 continue
             if not isinstance(obj, dict):
                 continue
+            sid = str(obj.get("session", "") or "")
+            if sid:
+                self.all_sessions.add(sid)
+            # 传了 --session 就只保留该会话的记录；没传则保持全部（向后兼容），
+            # 多会话混写由 run_check 单独判定是否失败。
+            if self.session_filter is not None and sid and sid != self.session_filter:
+                continue
             self.records.append(
                 LedgerRecord(
                     kind=str(obj.get("kind", "")),
@@ -429,6 +442,7 @@ class Ledger:
                     exit_code=obj.get("exit"),
                     time=str(obj.get("t", "")),
                     scope=str(obj.get("scope", "outer")),
+                    session=sid,
                 )
             )
         self.loaded = True
@@ -1232,14 +1246,27 @@ def detect_kind(text: str) -> str:
     return "unknown"
 
 
-def run_check(kind: str, text: str, ledger_path: str | None) -> Result:
+def run_check(kind: str, text: str, ledger_path: str | None,
+              session: str | None = None) -> Result:
     res = Result()
-    ledger = Ledger(ledger_path) if ledger_path else Ledger(None)
+    ledger = Ledger(ledger_path, session) if ledger_path else Ledger(None)
     res.evidence_tier = "ledger" if ledger.loaded else "shape-only"
 
     if kind == "unknown":
         res.add("error", "KIND-UNKNOWN",
                 "无法识别文件类型；用 --kind 指定 decision/report/brief/program")
+        return res
+
+    # 账本是按装机目录落盘的单一文件，同机多个会话会混写同一份。
+    # 不传 --session 时，A 会话跑过的命令可以冒充 B 会话的证据，
+    # "命令在账本里出现过" 这条判据就被稀释了。所以混合账本必须显式指定会话。
+    if ledger.loaded and len(ledger.all_sessions) > 1 and session is None:
+        known = "、".join(sorted(ledger.all_sessions))
+        res.add("error", "LEDGER-MULTI-SESSION",
+                f"账本混合了 {len(ledger.all_sessions)} 个会话（{known}），"
+                "未指定 --session 时无法确认哪条记录属于本次运行。"
+                "请加 `--session <本会话 id>`（插件在每步注入的状态里会打印它）",
+                heuristic=False)
         return res
 
     # 账本在，但只能看见外层 run_code：命令字面量在源码里就算「对上」，
@@ -1300,6 +1327,9 @@ def main(argv: list[str], *, default_kind: str = "auto", title: str = "unlimited
     ap.add_argument("--kind", default=default_kind,
                     choices=["auto", "decision", "report", "brief", "program"])
     ap.add_argument("--ledger", help="utc-ledger 插件落盘的 ledger.jsonl；给了才能校验证据真伪")
+    ap.add_argument("--session",
+                    help="本会话 id。账本混合了多个会话时必须指定，否则判失败"
+                         "（插件每步注入的状态里会打印本会话 id）")
     ap.add_argument("--strict", action="store_true", help="把警告也升级为失败")
     ap.add_argument("--json", action="store_true", help="以 JSON 输出")
     args = ap.parse_args(argv)
@@ -1307,7 +1337,7 @@ def main(argv: list[str], *, default_kind: str = "auto", title: str = "unlimited
     try:
         text = read_text_any(args.path)
         kind = args.kind if args.kind != "auto" else detect_kind(text)
-        res = run_check(kind, text, args.ledger)
+        res = run_check(kind, text, args.ledger, args.session)
     except InputError as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 2

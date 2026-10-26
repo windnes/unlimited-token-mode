@@ -107,7 +107,8 @@ unlimited-token-mode/                 # ← STANDARD EDITION skill
     ├── adversarial_suite.py          # 23 cases (17 attacks + 6 honest) × default/strict = 46 assertions
     ├── ab_compare.py                 # Feeds the same cases to the string-only and ledger versions, prints both verdicts
     ├── e2e_verify.py                 # Replays a real session ledger against its report
-    └── selftest.py                   # Validator self-test (17 checks, including the two plugin regressions)
+    ├── repair_session.py             # Backfills missing message ids into a damaged session file
+    └── selftest.py                   # Validator self-test (18 checks, including three plugin regressions)
 
 unlimited-token-ptc/                  # ← PTC EDITION skill
 ├── SKILL.md                          # Same seven contracts, re-stated for a run_code-only harness
@@ -235,7 +236,7 @@ Work through the steps in order. Report the result of each step before starting 
    b. Validator self-test, one per installed edition:
       python $DSH_HOME/preset-skills/unlimited-token-mode/scripts/selftest.py
       python $DSH_HOME/preset-skills/unlimited-token-ptc/scripts/selftest.py
-      Expected: 17/17 and 14/14. Each prints its own case count and a pass/fail
+      Expected: 18/18 and 14/14. Each prints its own case count and a pass/fail
       summary. Paste both. A failure here is not "probably fine" - stop.
    c. Top-level entry count of cordis.patch.yml: count before the install and after.
       It should increase by exactly the number of editions you installed. Zero-dependency check:
@@ -285,10 +286,12 @@ python unlimited-token-mode/scripts/unlimited_lint.py <artifact> --kind brief|de
 python unlimited-token-ptc/scripts/ptc_lint.py <artifact> --kind brief|decision|report|program
 
 # with the runtime ledger: upgrades shape-checking into falsifiable checking
-python unlimited-token-mode/scripts/unlimited_lint.py report.md --kind report --ledger .utc/ledger.jsonl
+# `--session` is required when one ledger file holds records from several sessions
+python unlimited-token-mode/scripts/unlimited_lint.py report.md --kind report \
+  --ledger "$DSH_HOME/.utc/ledger.jsonl" --session <session-id>
 
 # self-tests (both print their own case count and a pass/fail summary)
-python unlimited-token-mode/scripts/selftest.py    # 17 checks
+python unlimited-token-mode/scripts/selftest.py    # 18 checks
 python unlimited-token-ptc/scripts/selftest.py     # 14 checks
 ```
 
@@ -332,6 +335,46 @@ Reproduce with `python unlimited-token-mode/scripts/ab_compare.py <v1 scripts di
 **What the numbers mean.** 14 of 23 bad artifacts slipped past v1: it could not tell a real check from a well-copied fake, because in v1 the "real output" cell was written by the model itself.
 
 The **6 honest artifacts** in that set are the more important half. A validator that only catches bad guys is trivial to write — just always say no. v1 also produced one **false alarm**: a legitimate `df -h` disk check was rejected as fake, because the validator was matching on word similarity and the model had paraphrased the command. That single false alarm is the reason for the rule below.
+
+---
+
+## Troubleshooting
+
+### `stored session "..." is corrupt: session event at seq N lacks an identified message`
+
+**What it means.** The harness validates every stored `user/message` event on *load*: `dsh-session/lib/index.js:1200` throws when `message.id` is missing or empty. An event without an `id` is written happily and only fails later, when the session is re-opened — so the error appears days after the cause.
+
+**Cause.** Versions of `utc-ledger.mjs` up to and including HEAD returned the injected per-step state from the `agent/pre-step` hook as a **bare message without an `id`**. The framework does not backfill one: `Session.append()` only snapshots the payload, and `id` is generated solely by `createMessage()` in `dsh-llm/lib/index.js:37-42`. Every injected block therefore became a corrupt event.
+
+**Fixed** by adding `id: randomUUID()` to the injected message. Regression test: `unlimited-token-mode/plugins/test-message-id.mjs` (4 cases, wired into `selftest.py` as check 7; deliberately removing the `id:` line makes 2 of the 4 fail).
+
+**Repairing an already-damaged session.** `unlimited-token-mode/scripts/repair_session.py` backfills UUIDs into `user/message` events that lack one. It backs up first, verifies after writing, and exits non-zero if the event count or the framework rule check does not come out clean.
+
+```bash
+# inspect only — never writes
+python unlimited-token-mode/scripts/repair_session.py --dry-run "$DSH_HOME/sessions"
+
+# repair one session, or every damaged session under a directory
+python unlimited-token-mode/scripts/repair_session.py <session.jsonl>
+python unlimited-token-mode/scripts/repair_session.py --all "$DSH_HOME/sessions"
+```
+
+### `unlimited_lint.py: 错误: 无法读取 scripts/unlimited_lint.py`
+
+The preset and the docs used to spell the validator path relatively. Run from anywhere other than the repo root, that path does not resolve. Current versions write an absolute path into the generated preset and use `$DSH_HOME` for the ledger. If you are on an older install, re-run `python install.py --profile <name>`.
+
+### `LEDGER-MULTI-SESSION`
+
+One `$DSH_HOME/.utc/ledger.jsonl` holds records from every session, and the validator refuses to guess which session's records are yours. Pass `--session <session-id>` whenever more than one session has written to the file.
+
+### A `dsh-ops` row keeps disappearing from `cordis.patch.yml`
+
+**Symptom.** A row such as `dsh-ops-file` sits *inside* the generated block (between `# ==== 无限token模式（由 install.py 生成：begin）====` and the matching `end`). Reinstalling deletes it; the next harness start puts it back. During that window the file tools are genuinely gone.
+
+**Mechanism.** This is not a row you wrote. `dsh-ops/lib/config-updates.js` migrates component configs and persists them through `configEditor.edit()`, which appends the row at the end of the profile patch (`dsh-config-editor/lib/index.js` calls `document.add(...)`). The end of the patch is inside the generated block. So the row is written by a plugin, and the block's end is where it lands.
+
+
+**If you are on an older install**, delete those rows from inside the block manually, or just upgrade: the new installer moves them out on the next run.
 
 ---
 
@@ -469,7 +512,8 @@ unlimited-token-mode/                 # ← 无限token标准版技能
     ├── adversarial_suite.py          # 23 例（17 攻击 + 6 诚实）× 默认/严格 = 46 条断言
     ├── ab_compare.py                 # 同一批用例分别喂给纯字符串版与账本版，出对照表
     ├── e2e_verify.py                 # 把真实会话的账本与报告对账
-    └── selftest.py                   # 校验器自测（17 项，含两个插件回归）
+    ├── repair_session.py             # 给损坏的会话文件补缺失的消息 id
+    └── selftest.py                   # 校验器自测（18 项，含三个插件回归）
 
 unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 ├── SKILL.md                          # 同样七条契约，按 run_code 口径重述
@@ -630,17 +674,17 @@ python install.py --profile <你的 profile> --dry-run
 标准版（`unlimited-token-mode/scripts/`）：
 
 ```bash
-python scripts/selftest.py                    # 校验器自测，应全部通过
-python scripts/unlimited_lint.py <产物>        # 校验决策日志 / 运行报告 / 任务契约书
-python scripts/unlimited_lint.py <产物> --strict
+python unlimited-token-mode/scripts/selftest.py                    # 校验器自测，应全部通过
+python unlimited-token-mode/scripts/unlimited_lint.py <产物>        # 校验决策日志 / 运行报告 / 任务契约书
+python unlimited-token-mode/scripts/unlimited_lint.py <产物> --strict
 ```
 
 PTC 版（`unlimited-token-ptc/scripts/`）：
 
 ```bash
-python scripts/selftest.py                    # 校验器自测，应全部通过
-python scripts/ptc_lint.py <产物>              # --kind brief | report | decision | program（省略时自动探测）
-python scripts/ptc_lint.py <产物> --strict     # 追加 description 词数、多意图、疑似吞异常三项检查
+python unlimited-token-ptc/scripts/selftest.py                    # 校验器自测，应全部通过
+python unlimited-token-ptc/scripts/ptc_lint.py <产物>              # --kind brief | report | decision | program（省略时自动探测）
+python unlimited-token-ptc/scripts/ptc_lint.py <产物> --strict     # 追加 description 词数、多意图、疑似吞异常三项检查
 ```
 
 PTC 校验器多出第四类产物 `program`：程序账本（`templates/program-log.md`），每个 `run_code` 程序一条。它会拒绝这样的 `判决: pass`——没有 `exit=` 行、没有数字证据、或者「可失败性」栏写的是占位词。因为程序对自己算出的判决不是检验。
@@ -657,6 +701,46 @@ PTC 校验器多出第四类产物 `program`：程序账本（`templates/program
 那 23 个用例里有 **6 个是诚实产物**，这一半更重要：只抓坏人的校验器很好写——永远说 no 就行。v1 还**误杀过 1 个**：一次真实的 `df -h` 磁盘检查被判成了假核对，原因是那一版按词元相似度定罪，而模型把命令换了个说法。那一次误杀就是下面这条规则的由来。
 
 **为什么非要一个外部账本？** 因为校验器和被校验的东西如果出自同一个来源，规则写得再细也没用。只要"真实输出"这一栏是模型自己填的，它就能先抄一遍字段说明、再写一句"我确认过了"，然后通过。字符串比对分不出「真核对」和「抄得很像的假核对」。运行时账本可以：命令没执行过就是 `LEDGER-NO-CALL`，输出被改写就是 `LEDGER-OUTPUT-MISMATCH`，退出码编造就是 `LEDGER-EXIT-MISMATCH`。而那个文件模型写不了。
+
+---
+
+## 故障排查
+
+### `stored session "..." is corrupt: session event at seq N lacks an identified message`
+
+**含义。** 框架在**读取**会话时才校验每一条 `user/message`：`dsh-session/lib/index.js:1200` 在 `message.id` 缺失或为空时抛错。缺 `id` 的事件写入时毫无阻碍，只在会话被重新打开时失败——所以报错往往在成因发生几天后才出现。
+
+**成因。** 截至 HEAD 的 `utc-ledger.mjs` 把注入的每步状态从 `agent/pre-step` 钩子原样返回，是**一个没有 `id` 的裸消息**。框架不会补：`Session.append()` 只做载荷快照，`id` 仅由 `createMessage()` 在 `dsh-llm/lib/index.js:37-42` 生成。于是每一次注入都变成一条损坏事件。
+
+**已修**：给注入消息加 `id: randomUUID()`。回归测试 `unlimited-token-mode/plugins/test-message-id.mjs`（4 个用例，已作为 `selftest.py` 第 7 项接入；故意删掉 `id:` 那一行会让 4 个用例里 2 个失败）。
+
+**修复已经损坏的会话。** `unlimited-token-mode/scripts/repair_session.py` 给缺 `id` 的 `user/message` 事件补 UUID。先备份、写后复核，事件总数或框架规则复核不干净就以非零码退出。
+
+```bash
+# 只读检查，绝不写盘
+python unlimited-token-mode/scripts/repair_session.py --dry-run "$DSH_HOME/sessions"
+
+# 修一个会话，或修某个目录下所有损坏会话
+python unlimited-token-mode/scripts/repair_session.py <session.jsonl>
+python unlimited-token-mode/scripts/repair_session.py --all "$DSH_HOME/sessions"
+```
+
+### `unlimited_lint.py: 错误: 无法读取 scripts/unlimited_lint.py`
+
+旧版预设与文档把校验器路径写成相对路径，在仓库根之外运行就无法解析。当前版本会把绝对路径写进生成的预设，账本用 `$DSH_HOME`。若你装的是旧版，重跑 `python install.py --profile <name>`。
+
+### `LEDGER-MULTI-SESSION`
+
+一份 `$DSH_HOME/.utc/ledger.jsonl` 里混有多个会话的记录，校验器拒绝替你猜哪批属于你。当有多个会话写过该文件时，必须带 `--session <session-id>`。
+
+### `cordis.patch.yml` 里某条 `dsh-ops` 配置反复消失
+
+**症状。** 像 `dsh-ops-file` 这样的行落在生成块**内部**（`# ==== 无限token模式（由 install.py 生成：begin）====` 与对应 `end` 之间）。重装一次它被删掉，下次启动又被加回来。在中间那段窗口里，文件工具是真的没了。
+
+**机制。** 这行不是你写的。`dsh-ops/lib/config-updates.js` 会迁移组件配置并通过 `configEditor.edit()` 持久化，而 `dsh-config-editor/lib/index.js` 用 `document.add(...)` 把该行追加到 profile patch 的**末尾**——那正好在生成块里面。于是「删一次、加一次」的循环成立。
+
+
+**若你装的是旧版**：把那几行手工移到生成块外，或直接升级，新版安装器下一次运行就会替你移出去。
 
 ---
 

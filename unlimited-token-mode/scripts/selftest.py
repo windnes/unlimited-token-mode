@@ -230,6 +230,12 @@ def main() -> int:
         rc, out = run_node("test-dispatch.mjs")
         check("内层 PTC 调用落账：scope/exit/不可逆接管",
               rc == 0 and "11/11" in out, out[-800:])
+        rc, out = run_node("test-message-id.mjs")
+        # 这条守的是「注入的消息缺 id -> 历史打不开」那起事故（seq 14 lacks an identified message）。
+        # 必须包含反例守卫：校验器本身要能拒绝无 id 的消息，否则通过毫无意义。
+        check("注入消息必须带 id（否则历史重载被整份拒绝）",
+              rc == 0 and "4/4" in out, out[-800:])
+
 
     finally:
         shutil.rmtree(work, ignore_errors=True)

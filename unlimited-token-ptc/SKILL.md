@@ -112,8 +112,8 @@ PTC 的 `run_code` 里循环很便宜，别为了「省一次调用」把核对�
 填 `templates/run-report.md` + `templates/program-log.md`，两份都校验：
 
 ```bash
-python scripts/ptc_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl
-python scripts/ptc_lint.py program-log.md --kind program --ledger .utc/ledger.jsonl
+python scripts/ptc_lint.py run-report.md --kind report --ledger "$DSH_HOME/.utc/ledger.jsonl"
+python scripts/ptc_lint.py program-log.md --kind program --ledger "$DSH_HOME/.utc/ledger.jsonl"
 ```
 
 ---
@@ -152,7 +152,7 @@ python scripts/ptc_lint.py program-log.md --kind program --ledger .utc/ledger.js
 
 ```bash
 # 推荐：带账本
-python scripts/ptc_lint.py program-log.md --kind program --ledger .utc/ledger.jsonl
+python scripts/ptc_lint.py program-log.md --kind program --ledger "$DSH_HOME/.utc/ledger.jsonl"
 
 # 没账本：形态档，会明确告诉你它更弱
 python scripts/ptc_lint.py program-log.md --kind program

@@ -51,15 +51,23 @@
 
                 - 判档：只读且 ≤3 步用轻档（只守规则 4 和 7）；有写入、有计数、≥4 步用标准档（规则 1–4 和 7）；不可逆、外部可见、长流程、AIOps 用严格档（全部七条，决策块逐条留档）。拿不准就上一档。
                 - 签契约：歧义决议表没填满，不许开工。
-                - 摆状态：建 state/，写第一版快照，确定「谁是权威」。已启用账本插件时 `.utc/ledger.jsonl` 才是权威调用记录。
+                - 摆状态：建 state/，写第一版快照，确定「谁是权威」。已启用账本插件时账本文件才是权威调用记录（安装时写死为绝对路径，见下）。
                 - 执行：每步开头重读状态；每个不可逆动作前过后果门并留决策块。
-                - 收工：按可证伪收工交付，并用 `unlimited_lint.py --kind report --ledger .utc/ledger.jsonl` 校验后再宣称完成。
+                - 收工：按可证伪收工交付，并用 `unlimited_lint.py --kind report --ledger <账本绝对路径>` 校验后再宣称完成。
 
                 ## 校验命令
 
+                安装时会把脚本路径与账本路径**都填成绝对路径**——相对路径按会话工作目录解析，
+                而工作目录不是技能目录也不是账本目录，照抄必然 exit 2。
+
                 ```
-                python scripts/unlimited_lint.py <file> --kind brief|decision|report|program --ledger .utc/ledger.jsonl
+                python "<技能目录>/scripts/unlimited_lint.py" <file> --kind brief|decision|report|program --ledger "<账本绝对路径>" --session <本会话 id>
                 ```
+
+                - `<技能目录>`：`$DSH_HOME/preset-skills/unlimited-token-mode`
+                - `<账本绝对路径>`：`$DSH_HOME/.utc/ledger.jsonl`
+                - `--session`：插件每步注入的状态里给出了本会话 id。账本只含一个会话时可省略；
+                  含多个会话时**必须**指定，否则判 `LEDGER-MULTI-SESSION` 失败。
 
                 退出码 0 通过 / 1 判定失败 / 2 输入错误。看到输出里的「证据档 shape-only」就不要宣称证据已被验证——那只是形态检查。
 

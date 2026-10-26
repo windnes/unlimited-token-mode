@@ -4,7 +4,7 @@
 >
 > 校验（推荐，能查出编造与改写）：
 > ```bash
-> python scripts/unlimited_lint.py decisions.md --kind decision --ledger .utc/ledger.jsonl
+> python scripts/unlimited_lint.py decisions.md --kind decision --ledger "$DSH_HOME/.utc/ledger.jsonl"
 > ```
 > 没有账本时只能做形态检查：
 > ```bash

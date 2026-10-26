@@ -20,6 +20,7 @@
  *     config: { ledgerPath: '.utc/ledger.jsonl', injectState: true }
  */
 
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -156,6 +157,82 @@ function sniffExit(output, isError) {
   return isError ? 1 : null
 }
 
+/* ---------------------------------------------------------------------------
+ * 脱敏：账本是审计日志，会被 diff、备份、打包发出去排查问题。
+ * 一次 `cat .env` 就把整份密钥原样钉死在 append-only 文件里，删不掉。
+ *
+ * 只替换**值**，保留命令结构：`cat .env` 仍是 `cat .env`，
+ * 只有 `WORKBUDDY_API_KEY=***` 那一段的值被遮掉。
+ * 这样证据链（这条命令跑没跑过）不受影响，泄漏面却没了。
+ * ------------------------------------------------------------------------- */
+
+/** 知名密钥前缀：命中即遮掉整个 token。 */
+const SECRET_PREFIXES = [
+  'sk-', 'sk_', 'pk_', 'rk_', 'ck_', 'ghp_', 'gho_', 'ghs_', 'ghu_',
+  'github_pat_', 'xoxb-', 'xoxp-', 'xoxa-', 'AKIA', 'ASIA', 'AIza',
+  'glpat-', 'hf_', 'shpat_', 'dop_v1_', 'npm_', 'pypi-',
+]
+
+/** `NAME=VALUE` 形态：环境变量 / dotenv / 配置文件赋值。 */
+const ASSIGN_RE = /\b([A-Za-z_][A-Za-z0-9_]{2,})\s*=\s*("([^"\n]*)"|'([^'\n]*)'|([^\s"';&|]+))/g
+
+/** 名字里带这些词、且值不像路径/数字时，按密钥处理。 */
+const SENSITIVE_NAME_RE = /(?:^|_)(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|CREDENTIALS|AUTH|APIKEY)(?:_|$)/i
+
+/** 这些值不像密钥（路径、布尔、短数字），不要遮。 */
+function looksInnocent(v) {
+  if (!v) return true
+  if (v.length < 8) return true
+  if (/^[\d.]+$/.test(v)) return true
+  if (/^[A-Za-z]:[\\/]/.test(v)) return true
+  if (v.startsWith('./') || v.startsWith('../') || v.startsWith('/')) return true
+  if (/^(true|false|null|none|yes|no|on|off)$/i.test(v)) return true
+  return false
+}
+
+function redactValue(v) {
+  return '***'
+}
+
+/**
+ * 对一段文本做脱敏。返回 { text, hits }，hits 为被遮掉的处数。
+ * 纯函数、无副作用，便于单测。
+ */
+export function redactSecrets(input) {
+  if (typeof input !== 'string' || input.length === 0) return { text: input, hits: 0 }
+  let hits = 0
+  let out = input
+
+  /* 1) NAME=VALUE 先做：名字像密钥时遮**整个值**。
+     必须排在前缀扫描之前 —— 否则 `WORKBUDDY_API_KEY=ck_abc.def` 会先被
+     前缀规则切成 `ck_***.def`，后半截仍留在文件里，而第 2 步看到 `***`
+     就跳过了。实测就是这样漏掉的。 */
+  out = out.replace(ASSIGN_RE, (whole, name, quoted, dq, sq, bare) => {
+    const value = dq ?? sq ?? bare ?? ''
+    const sensitiveName = SENSITIVE_NAME_RE.test(name)
+    if (!sensitiveName && !SECRET_PREFIXES.some((p) => value.startsWith(p))) return whole
+    if (looksInnocent(value)) return whole
+    hits += 1
+    const wrap = dq !== undefined ? '"' : sq !== undefined ? "'" : ''
+    return `${name}=${wrap}${redactValue(value)}${wrap}`
+  })
+
+  /* 2) 再扫知名前缀：处理命令行里裸出现的 token（没跟着 NAME= 的）。 */
+  for (const prefix of SECRET_PREFIXES) {
+    const re = new RegExp(
+      '(?<![A-Za-z0-9_])' + prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+      '[A-Za-z0-9_\\-.+/=]{6,}',
+      'g',
+    )
+    out = out.replace(re, () => {
+      hits += 1
+      return prefix + '***'
+    })
+  }
+
+  return { text: out, hits }
+}
+
 export function apply(ctx, config = {}) {
   const ledgerPath = path.resolve(config.ledgerPath ?? path.join('.utc', 'ledger.jsonl'))
   const injectState = config.injectState !== false
@@ -186,7 +263,21 @@ export function apply(ctx, config = {}) {
    */
   function append(record) {
     ensureDir()
-    const line = JSON.stringify(record) + '\n'
+    /* 落盘前脱敏。命令与输出都可能夹带密钥（`cat .env`、`echo $TOKEN`、
+       `export KEY=...`），而这个文件是 append-only、会被备份和转发。
+       只遮值不遮结构：命令本身仍可被 lint 匹配。 */
+    const safe = { ...record }
+    let redacted = 0
+    for (const field of ['command', 'output', 'target']) {
+      if (typeof safe[field] !== 'string') continue
+      const r = redactSecrets(safe[field])
+      if (r.hits > 0) {
+        safe[field] = r.text
+        redacted += r.hits
+      }
+    }
+    if (redacted > 0) safe.redacted = redacted
+    const line = JSON.stringify(safe) + '\n'
     try {
       fs.appendFileSync(ledgerPath, line)
     } catch {
@@ -355,6 +446,16 @@ export function apply(ctx, config = {}) {
         messages: [
           ...decision.messages,
           {
+            /* 必须显式带 id。
+             *
+             * 框架不会替注入的消息补 id：Session.append() 只快照 data
+             * （dsh-session/lib/index.js:1523），id 只在生产者走
+             * createMessage()（dsh-llm/lib/index.js:37-42，id: brandString(randomUUID())）时才存在。
+             * 原先这里返回裸对象，于是每步都往会话日志里写一条没有 id 的
+             * user/message；重载时 adoptSessionEvent 在
+             * "lacks an identified message" 处整份拒绝，历史直接打不开。
+             * 用带 source 的快照形式时 form/sections 也要一起给全。 */
+            id: randomUUID(),
             role: 'user',
             content: [{ type: 'text', text }],
             source: { kind: name, form: 'snapshot', sections: [{ name, text }] },

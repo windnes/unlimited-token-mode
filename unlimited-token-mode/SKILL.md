@@ -130,14 +130,16 @@ python scripts/unlimited_lint.py <brief.md> --kind brief
 ### 摆状态
 
 建 `state/`，写第一版快照，确定「谁是权威」。
-启用了 `utc-ledger` 插件的话，`.utc/ledger.jsonl` 会自动出现——那是权威调用记录。
+启用了 `utc-ledger` 插件的话，`$DSH_HOME/.utc/ledger.jsonl` 会自动出现——那是权威调用记录。
+**它是绝对路径，不在会话工作目录下。** 下面所有 `--ledger` 都写这个完整路径，
+写 `.utc/ledger.jsonl` 会按当前工作目录解析，必然读不到。
 
 ### 执行
 
 每步开头重读状态；每个不可逆动作前过后果门并留决策块：
 
 ```bash
-python scripts/unlimited_lint.py decisions.md --kind decision --ledger .utc/ledger.jsonl
+python scripts/unlimited_lint.py decisions.md --kind decision --ledger "$DSH_HOME/.utc/ledger.jsonl"
 ```
 
 ### 收工
@@ -145,7 +147,7 @@ python scripts/unlimited_lint.py decisions.md --kind decision --ledger .utc/ledg
 填 `templates/run-report.md`，跑：
 
 ```bash
-python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl
+python scripts/unlimited_lint.py run-report.md --kind report --ledger "$DSH_HOME/.utc/ledger.jsonl"
 ```
 
 ---
@@ -154,16 +156,16 @@ python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledge
 
 ```bash
 # 有账本：可证伪档（推荐）
-python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl
+python scripts/unlimited_lint.py run-report.md --kind report --ledger "$DSH_HOME/.utc/ledger.jsonl"
 
 # 没账本：形态档（更弱，会明确告诉你）
 python scripts/unlimited_lint.py run-report.md --kind report
 
 # 严格模式：把非启发式警告也升级为失败
-python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl --strict
+python scripts/unlimited_lint.py run-report.md --kind report --ledger "$DSH_HOME/.utc/ledger.jsonl" --strict
 
 # JSON 输出，便于接 CI
-python scripts/unlimited_lint.py run-report.md --kind report --ledger .utc/ledger.jsonl --json
+python scripts/unlimited_lint.py run-report.md --kind report --ledger "$DSH_HOME/.utc/ledger.jsonl" --json
 ```
 
 退出码：`0` 通过 / `1` 判定失败 / `2` 输入或用法错误（**不含崩溃**——任何输入都不该让校验器崩）。
@@ -222,7 +224,8 @@ CLI 会打印当前档位。**看到 `shape-only` 就不要宣称证据已被验
 - id: utc-ledger
   name: 'file:///C:/path/to/unlimited-token-mode/plugins/utc-ledger.mjs'
   config:
-    ledgerPath: .utc/ledger.jsonl
+    # 绝对路径。相对值按进程 cwd 解析，会落到启动目录而不是你放工作区的地方。
+    ledgerPath: 'C:/Users/<you>/.dsh/.utc/ledger.jsonl'
     injectState: true
 ```
 

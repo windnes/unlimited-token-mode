@@ -53,9 +53,17 @@
 
 ## 校验命令
 
+安装时会把脚本路径与账本路径**都填成绝对路径**——相对路径按会话工作目录解析，
+而工作目录不是技能目录也不是账本目录，照抄必然 exit 2。
+
 ```
-python scripts/ptc_lint.py <file> --kind brief|decision|report|program --ledger .utc/ledger.jsonl
+python "<技能目录>/scripts/ptc_lint.py" <file> --kind brief|decision|report|program --ledger "<账本绝对路径>" --session <本会话 id>
 ```
+
+- `<技能目录>`：`$DSH_HOME/preset-skills/unlimited-token-ptc`
+- `<账本绝对路径>`：`$DSH_HOME/.utc/ledger.jsonl`
+- `--session`：插件每步注入的状态里给出了本会话 id。账本只含一个会话时可省略；
+  含多个会话时**必须**指定，否则判 `LEDGER-MULTI-SESSION` 失败。
 
 退出码 0 通过 / 1 判定失败 / 2 输入错误。
 

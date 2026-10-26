@@ -158,12 +158,29 @@ def to_file_url(path: str) -> str:
     return pathlib.Path(path).resolve().as_uri()
 
 
-def preset_text(mark: str, plugin_url: str) -> str:
-    """读取仓库里的预设文件，把插件路径换成绝对 file:// URL。"""
+def preset_text(mark: str, plugin_url: str, dsh_home: str | None = None) -> str:
+    """读取仓库里的预设文件，把相对路径全部换成绝对路径。
+
+    要换的三处都是**按加载者解析**的相对路径，装到别处就静默失效：
+
+    1. 插件路径 `../unlimited-token-mode/plugins/utc-ledger.mjs` → file:// URL
+    2. `ledgerPath: .utc/ledger.jsonl` → 账本是本机运行数据，落在 $DSH_HOME/.utc/
+       下，不跟着某个会话的工作目录走，也不能写进仓库 checkout（否则 git 一操作就脏）
+    3. persona 正文里的 `python scripts/xxx_lint.py` 与 `--ledger .utc/ledger.jsonl`
+       → 技能目录下脚本的绝对路径。工作目录通常既不是技能目录也不是账本目录，
+       照抄 persona 原文必然 exit 2。
+    """
     src = os.path.join(PRESET_DIR, PRESET_FILES[mark])
     if not os.path.exists(src):
         raise SystemExit(f"找不到预设文件: {src}")
     text = read(src)
+
+    home = dsh_home or default_dsh_home()
+    skills_root = os.path.join(home, "preset-skills")
+    skill_dir = os.path.join(skills_root, SKILL_DIRS[mark])
+    ledger_abs = os.path.join(home, ".utc", "ledger.jsonl")
+
+    # 1) 插件路径
     replaced, n = re.subn(
         r"^(\s*)name:\s*'\.\./unlimited-token-mode/plugins/utc-ledger\.mjs'\s*$",
         lambda m: m.group(1) + "name: '" + plugin_url + "'",
@@ -172,7 +189,37 @@ def preset_text(mark: str, plugin_url: str) -> str:
     )
     if n == 0:
         print(f"警告: {src} 里没找到相对插件路径，将按原样安装", file=sys.stderr)
-    return replaced.rstrip(NEWLINE)
+    text = replaced
+
+    # 2) ledgerPath
+    text, n = re.subn(
+        r"^(\s*)ledgerPath:\s*\.utc/ledger\.jsonl\s*$",
+        lambda m: m.group(1) + "ledgerPath: '" + ledger_abs.replace("\\", "/") + "'",
+        text,
+        flags=re.MULTILINE,
+    )
+    if n == 0:
+        print(f"警告: {src} 里没找到 ledgerPath 相对路径", file=sys.stderr)
+
+    # 3) persona 正文里的占位符
+    #    模板里写 `<技能目录>` / `<账本绝对路径>` 两个占位符（见 preset/prompt-prefix*.md），
+    #    这里填成安装后的真实绝对路径。留占位符比留相对路径更糟：模型会照字面执行。
+    lint_dir = skill_dir.replace("\\", "/")
+    ledger_slash = ledger_abs.replace("\\", "/")
+    text, n1 = re.subn(re.escape("<技能目录>"), lambda m: lint_dir, text)
+    text, n2 = re.subn(re.escape("<账本绝对路径>"), lambda m: ledger_slash, text)
+    if n1 == 0 or n2 == 0:
+        print(f"警告: {src} 的 persona 里占位符没找全"
+              f"（技能目录 {n1} 处 / 账本 {n2} 处）", file=sys.stderr)
+
+    #    兼容旧模板里可能残留的相对写法
+    lint_name = "ptc_lint.py" if mark == PTC_MARK else "unlimited_lint.py"
+    text = text.replace("python scripts/" + lint_name,
+                        'python "' + lint_dir + '/scripts/' + lint_name + '"')
+    text = text.replace("--ledger .utc/ledger.jsonl",
+                        '--ledger "' + ledger_slash + '"')
+
+    return text.rstrip(NEWLINE)
 
 
 def strip_existing(text: str) -> tuple[str, bool]:
@@ -259,7 +306,7 @@ def main() -> int:
 
     chunks: list[str] = [GEN_BEGIN, ""]
     for mark in wanted:
-        chunks.append(preset_text(mark, to_file_url(PLUGIN)))
+        chunks.append(preset_text(mark, to_file_url(PLUGIN), dsh_home))
         chunks.append("")
     chunks.append(GEN_END)
 

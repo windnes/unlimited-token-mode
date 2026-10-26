@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -235,6 +236,28 @@ def main() -> int:
         # 必须包含反例守卫：校验器本身要能拒绝无 id 的消息，否则通过毫无意义。
         check("注入消息必须带 id（否则历史重载被整份拒绝）",
               rc == 0 and "4/4" in out, out[-800:])
+
+        # ---------------- 8. 重装不得删除外来行 ----------------
+        # dsh-ops 的配置迁移会把 dsh-ops-file 行追加到 profile patch 末尾，
+        # 正好落在 install.py 的生成块内部。旧版按区间整段删除，于是每次
+        # 重装都删掉它、每次重启插件又写回来。
+        #
+        # 测试文件与它依赖的 install.py 都在仓库里；已安装的技能副本不含安装器，
+        # 那里脚本会自己打印 SKIP 并退出 0——因此 SKIP 判通过，缺文件才判失败。
+        print("--- 8. 重装保住生成块内的外来行 ---")
+        strip_test = os.path.join(HERE, "test_strip_existing.py")
+        if os.path.exists(strip_test):
+            proc = subprocess.run([sys.executable, strip_test], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
+            out2 = (proc.stdout or "") + (proc.stderr or "")
+            skipped = "SKIP" in out2
+            # 用例数会随测试增长而变，只断言「全过」（n/n 且 n>0），不写死具体数字。
+            full_pass = re.search(r"strip_existing:\s*(\d+)/\1\s*通过", out2) is not None
+            check("strip_existing 保住外来行且幂等",
+                  proc.returncode == 0 and (skipped or full_pass), out2[-900:])
+        else:
+            check("strip_existing 保住外来行且幂等", False,
+                  f"找不到测试文件 {strip_test}")
 
 
     finally:

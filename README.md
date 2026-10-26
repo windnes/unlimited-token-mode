@@ -108,7 +108,8 @@ unlimited-token-mode/                 # ← STANDARD EDITION skill
     ├── ab_compare.py                 # Feeds the same cases to the string-only and ledger versions, prints both verdicts
     ├── e2e_verify.py                 # Replays a real session ledger against its report
     ├── repair_session.py             # Backfills missing message ids into a damaged session file
-    └── selftest.py                   # Validator self-test (18 checks, including three plugin regressions)
+    ├── test_strip_existing.py        # Reinstall must not delete rows this tool did not write (skips without install.py)
+    └── selftest.py                   # Validator self-test (19 checks, including four plugin regressions)
 
 unlimited-token-ptc/                  # ← PTC EDITION skill
 ├── SKILL.md                          # Same seven contracts, re-stated for a run_code-only harness
@@ -291,7 +292,7 @@ python unlimited-token-mode/scripts/unlimited_lint.py report.md --kind report \
   --ledger "$DSH_HOME/.utc/ledger.jsonl" --session <session-id>
 
 # self-tests (both print their own case count and a pass/fail summary)
-python unlimited-token-mode/scripts/selftest.py    # 18 checks
+python unlimited-token-mode/scripts/selftest.py    # 19 checks
 python unlimited-token-ptc/scripts/selftest.py     # 14 checks
 ```
 
@@ -373,6 +374,7 @@ One `$DSH_HOME/.utc/ledger.jsonl` holds records from every session, and the vali
 
 **Mechanism.** This is not a row you wrote. `dsh-ops/lib/config-updates.js` migrates component configs and persists them through `configEditor.edit()`, which appends the row at the end of the profile patch (`dsh-config-editor/lib/index.js` calls `document.add(...)`). The end of the patch is inside the generated block. So the row is written by a plugin, and the block's end is where it lands.
 
+**Fixed** in `strip_existing()`: rows inside the block that this tool did not write are now lifted out and placed *before* the regenerated block instead of being deleted. Regression test: `unlimited-token-mode/scripts/test_strip_existing.py` (6 cases, wired into `selftest.py` as check 8; the pre-fix code scored 2/6). `strip_existing()` is also idempotent now — previously a second call on its own output produced a different result.
 
 **If you are on an older install**, delete those rows from inside the block manually, or just upgrade: the new installer moves them out on the next run.
 
@@ -513,7 +515,8 @@ unlimited-token-mode/                 # ← 无限token标准版技能
     ├── ab_compare.py                 # 同一批用例分别喂给纯字符串版与账本版，出对照表
     ├── e2e_verify.py                 # 把真实会话的账本与报告对账
     ├── repair_session.py             # 给损坏的会话文件补缺失的消息 id
-    └── selftest.py                   # 校验器自测（18 项，含三个插件回归）
+    ├── test_strip_existing.py        # 重装不得删除本工具没写过的行（无 install.py 时跳过）
+    └── selftest.py                   # 校验器自测（19 项，含四个插件回归）
 
 unlimited-token-ptc/                  # ← 无限tokenPTC版技能
 ├── SKILL.md                          # 同样七条契约，按 run_code 口径重述
@@ -739,6 +742,7 @@ python unlimited-token-mode/scripts/repair_session.py --all "$DSH_HOME/sessions"
 
 **机制。** 这行不是你写的。`dsh-ops/lib/config-updates.js` 会迁移组件配置并通过 `configEditor.edit()` 持久化，而 `dsh-config-editor/lib/index.js` 用 `document.add(...)` 把该行追加到 profile patch 的**末尾**——那正好在生成块里面。于是「删一次、加一次」的循环成立。
 
+**已修**：`strip_existing()` 现在把块内**本工具没写过**的行抬到新生成块之前保留，而不是删掉。回归测试 `unlimited-token-mode/scripts/test_strip_existing.py`（6 个用例，已作为 `selftest.py` 第 8 项接入；修复前那份代码只有 2/6）。`strip_existing()` 现在也是幂等的——之前对同一份输出连跑两次会得到不同结果。
 
 **若你装的是旧版**：把那几行手工移到生成块外，或直接升级，新版安装器下一次运行就会替你移出去。
 

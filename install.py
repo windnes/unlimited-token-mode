@@ -222,23 +222,90 @@ def preset_text(mark: str, plugin_url: str, dsh_home: str | None = None) -> str:
     return text.rstrip(NEWLINE)
 
 
+def _split_generated_block(text: str) -> tuple[str, str, str] | None:
+    """把文本切成「块前 / 块内 / 块后」，块标记本身不包含在任何一段里。
+
+    找不到完整的一对标记时返回 None。
+    """
+    begin = text.find(GEN_BEGIN)
+    if begin < 0:
+        return None
+    end = text.find(GEN_END, begin)
+    if end < 0:
+        # 只有 begin 没有 end：退化成「从这里到文件末尾都是块内」，
+        # 但这不是正常状态，保留旧行为由调用方处理。
+        return None
+    return text[:begin], text[begin + len(GEN_BEGIN):end], text[end + len(GEN_END):]
+
+
+def _foreign_rows(inner: str) -> list[str]:
+    """从生成块内部挑出**不是本工具写的**顶层条目，按原始顺序返回。
+
+    判定依据：本工具写的是若干 `- insert:` 块，块内条目**有缩进**；
+    外来条目是顶层条目（行首无缩进、以 `- ` 开头）。因此：
+
+    - 行首 `- insert:`（无缩进）→ 开始一个本工具区块，其后续缩进行归它
+    - 行首 `- xxx`（无缩进且不是 insert）→ 外来条目，开始一个新条目
+    - 缩进行 → 属于当前条目
+    - 空行与注释行 → **跳过**，不算任何条目
+
+    注释行必须跳过：预设模板本身就是以一段注释开头（`# --- 无限token标准版 ---`
+    之类），它属于本工具生成的内容，每次安装都会重新产生。若把注释当外来行抬出
+    块外，下一轮安装又会新生成一份，于是每次重装都多出一份重复注释——这正是
+    第一版救援逻辑引入的 bug（一次安装 +10 行）。
+
+    为什么要做救援：dsh-ops 的配置迁移会用 configEditor.edit() 把 `dsh-ops-file`
+    行追加到 profile patch 末尾，正好落在生成块内部。旧实现按区间整段删除，于是
+    每次重装都删掉这一行，插件下次启动再写回，文件工具在中间那一刻是真的缺失。
+    """
+    entries: list[tuple[bool, list[str]]] = []  # (is_insert, lines)
+    for line in inner.splitlines():
+        bare = line.strip()
+        if not bare or bare.startswith("#"):
+            continue
+        top_level = line == line.lstrip() and bare.startswith("- ")
+        if top_level:
+            entries.append((bare.startswith("- insert:"), [line]))
+            continue
+        if not entries:
+            # 块内第一行就是缩进行：无法归属，按外来行处理，宁可多救不可少救
+            entries.append((False, [line]))
+            continue
+        entries[-1][1].append(line)
+
+    rows = [NEWLINE.join(lines) for is_insert, lines in entries if not is_insert]
+    return rows
+
+
 def strip_existing(text: str) -> tuple[str, bool]:
     """移除所有已存在的目标 preset 条目，以及本工具此前生成的区块。
 
     只删自己生成的块是不够的：用户可能早先手工拷过同样的 preset，
     留着就会产生重复 id。
+
+    但反过来，块里可能混进**别人写的**行（见 _foreign_rows 的说明）。
+    那些行不能删，必须搬到块外保留，否则每次重装都会删掉它们、
+    下一次启动又被插件写回来，形成「删一次加一次」的循环。
     """
     changed = False
 
-    # 1) 先删本工具生成的整段，保证反复运行不会越积越多
-    begin = text.find(GEN_BEGIN)
-    if begin >= 0:
-        end = text.find(GEN_END, begin)
-        if end >= 0:
-            text = text[:begin] + text[end + len(GEN_END):]
-        else:
-            text = text[:begin]
+    # 1) 摘掉本工具生成的整段，但把块内的外来行救出来，放到新块之前
+    rescue: list[str] = []
+    parts = _split_generated_block(text)
+    if parts is not None:
+        head, inner, tail = parts
+        rescue = _foreign_rows(inner)
+        text = head + tail
         changed = True
+    elif GEN_BEGIN in text:
+        # 只有 begin 没有 end：退化成保留 begin 之前的部分（旧行为）
+        text = text[: text.find(GEN_BEGIN)]
+        changed = True
+
+    if rescue:
+        # 插到块外：紧跟在原有内容之后，保持与原有行的先后次序。
+        # 末尾补一个空行，避免与随后追加的 GEN_BEGIN 黏在一起。
+        text = text.rstrip(NEWLINE) + NEWLINE + NEWLINE + NEWLINE.join(rescue) + NEWLINE
 
     # 2) 再按锚点删掉任何声明了目标 preset id 的顶层 insert 块
     lines = text.splitlines()

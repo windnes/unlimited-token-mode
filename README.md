@@ -765,6 +765,40 @@ python unlimited-token-mode/scripts/repair_session.py --all "$DSH_HOME/sessions"
 
 ---
 
+## Commit messages are bilingual / 提交信息双语
+
+Commits made after 2026-10-26 use a bilingual format: the subject carries both
+languages on one line (` | ` as separator), and the body has an `## English`
+section followed by a `## 中文` section. The subject must stay on one line
+because `git log --oneline`, GitHub's commit list and IDE blame views all show
+only the first line — splitting languages across lines means readers of one
+language see nothing.
+
+The template is checked in as `.gitmessage`. Enable it once per clone:
+
+```bash
+git config commit.template .gitmessage
+```
+
+History before that date is single-language (10 Chinese, 2 English) and is left
+alone: rewriting pushed commits changes their SHAs and forks anyone's clone.
+
+2026-10-26 之后的提交采用双语格式：标题在一行内同时包含两种语言（用 ` | `
+分隔），正文先 `## English` 段、后 `## 中文` 段。标题必须单行，因为
+`git log --oneline`、GitHub 的提交列表和 IDE 的 blame 视图都只显示第一行——
+分行写会让其中一种语言的读者什么都看不到。
+
+模板已作为 `.gitmessage` 提交进仓库。每个 clone 启用一次：
+
+```bash
+git config commit.template .gitmessage
+```
+
+该日期之前的历史是单语的（10 个中文、2 个英文），不做改写：改写已推送的
+提交会改变 SHA，并让别人的 clone 分叉。
+
+---
+
 ## 出处
 
 针对的问题清单与实测数据来自 [karminski/deepseek-v4.1-flash-1017-issue-pov](https://github.com/karminski/deepseek-v4.1-flash-1017-issue-pov) 的 `AGENT-CAPABILITY-REPORT.md`，以及作者的使用建议。
